@@ -1,0 +1,17 @@
+name: hiedge
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - dask ==2024.1.1
+  - matplotlib ==3.8.2
+  - numpy <=2.0
+  - pandas ==2.2.2
+  - pandera ==0.18.0
+  - pybedtools ==0.9.1
+  - pydantic ==2.8.2
+  - PyYAML ==6.0.1
+  - scikit-learn ==1.4.0
+  - scipy ==1.14.0
+
