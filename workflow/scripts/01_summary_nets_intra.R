@@ -29,7 +29,7 @@ library(rtracklayer)
 library(GenomicRanges)
 library(ggplot2)
 library(ggraph)     # For network visualization
-library(visNetwork) # For interactive visualizations
+#library(visNetwork) # For interactive visualizations
 
 ######### set up variables
 #phenotype="Normal"
@@ -57,7 +57,7 @@ chromosomes <- factor(paste0("chr", c(seq(1:22), "X")))
 #
 create_hic_networks_function <- function(hic_data, chromosomes, resolution, qvalue_threshold = 0.01) {
   # Validate resolution parameter
-  if(!is.numeric(resolution)) {
+  if(!is.numeric(resolution) || resolution <= 0) {
     stop("resolution must be a positive number representing bin size in base pairs")
   }
   
@@ -67,16 +67,6 @@ create_hic_networks_function <- function(hic_data, chromosomes, resolution, qval
   # Convert tibble to dataframe if needed
   hic_df <- as.data.frame(hic_data)
   
-  # # Validate data resolution matches parameter
-  # # Check first row
-  # bin_size_1 <- hic_df$end_1[1] - hic_df$start_1[1]
-  # bin_size_2 <- hic_df$end_2[1] - hic_df$start_2[1]
-  # 
-  # if(bin_size_1 != resolution || bin_size_2 != resolution) {
-  #   stop(sprintf("Data resolution (%d, %d) does not match provided resolution parameter (%d)", 
-  #                bin_size_1, bin_size_2, resolution))
-  # }
-  # 
   # Create network for each chromosome
   for(chr in chromosomes) {
     # Filter data for current chromosome and q-value
@@ -89,8 +79,8 @@ create_hic_networks_function <- function(hic_data, chromosomes, resolution, qval
     edges <- data.frame(
       source = chr_data$idx_1,
       target = chr_data$idx_2,
-      weight = chr_data$zscore_chr,
       qvalue = chr_data$q_value,
+      zscore = chr_data$zscore_chr,
       distance = chr_data$genomic_distance,
       count = chr_data$interaction_count
     )
@@ -118,12 +108,18 @@ create_hic_networks_function <- function(hic_data, chromosomes, resolution, qval
     nodes$start <- nodes$midpoint - half_resolution
     nodes$end <- nodes$midpoint + half_resolution
     
-    # Create igraph object
+    # Create igraph object (unweighted)
     g <- graph_from_data_frame(
       d = edges,
       vertices = nodes,
       directed = FALSE
     )
+    
+    # Store additional attributes in the graph
+    E(g)$zscore <- edges$zscore  # Retain z-score as an edge attribute
+    E(g)$qvalue <- edges$qvalue
+    E(g)$distance <- edges$distance
+    E(g)$count <- edges$count
     
     # Store network
     networks[[chr]] <- g
@@ -174,17 +170,40 @@ process_gene_annotations_function <- function(annotation_gr, chromosomes, gene_t
 
 # function to add node annotations to networks (based on coordinates)
 add_gene_annotations_function <- function(networks, gene_annotations) {
-  # Process each network
+  # Validate inputs
+  if (!is.list(networks) || !all(sapply(networks, inherits, "igraph"))) {
+    stop("networks must be a named list of igraph objects.")
+  }
+  
+  if (!inherits(gene_annotations, "GRanges")) {
+    stop("gene_annotations must be a GRanges object.")
+  }
+  
+  # Annotate each network
   annotated_networks <- lapply(names(networks), function(chr) {
     g <- networks[[chr]]
+    
+    # Check if network has necessary attributes
+    if (!all(c("chr", "start", "end") %in% vertex_attr_names(g))) {
+      stop(sprintf("Network for chromosome %s is missing 'chr', 'start', or 'end' node attributes.", chr))
+    }
     
     # Get chromosome-specific annotations
     chr_genes <- gene_annotations[seqnames(gene_annotations) == chr]
     
-    if(length(chr_genes) == 0) {
+    if (length(chr_genes) == 0) {
       warning(sprintf("No gene annotations found for chromosome %s", chr))
       return(g)
     }
+    
+    # Use only the start positions of the genes for overlap
+    gene_starts <- GRanges(
+      seqnames = seqnames(chr_genes),
+      ranges = IRanges(start = start(chr_genes), end = start(chr_genes)),
+      gene_name = chr_genes$gene_name,
+      gene_id = chr_genes$gene_id,
+      gene_type = chr_genes$gene_type
+    )
     
     # Create GRanges for network nodes
     nodes_gr <- GRanges(
@@ -192,23 +211,23 @@ add_gene_annotations_function <- function(networks, gene_annotations) {
       ranges = IRanges(start = V(g)$start, end = V(g)$end)
     )
     
-    # Find overlaps
-    overlaps <- findOverlaps(nodes_gr, chr_genes)
+    # Find overlaps (only the gene start positions are considered)
+    overlaps <- findOverlaps(nodes_gr, gene_starts)
     
     # Initialize gene annotation attributes
-    V(g)$genes <- ""
-    V(g)$gene_ids <- ""
-    V(g)$gene_types <- ""
+    V(g)$genes <- NA_character_
+    V(g)$gene_ids <- NA_character_
+    V(g)$gene_types <- NA_character_
     
     # Process overlaps
-    for(i in seq_along(nodes_gr)) {
-      # Find all genes overlapping with this node
+    for (i in seq_along(nodes_gr)) {
+      # Find all genes whose start position overlaps with this node
       gene_idx <- subjectHits(overlaps[queryHits(overlaps) == i])
       
-      if(length(gene_idx) > 0) {
-        V(g)$genes[i] <- paste(chr_genes$gene_name[gene_idx], collapse = ";")
-        V(g)$gene_ids[i] <- paste(chr_genes$gene_id[gene_idx], collapse = ";")
-        V(g)$gene_types[i] <- paste(chr_genes$gene_type[gene_idx], collapse = ";")
+      if (length(gene_idx) > 0) {
+        V(g)$genes[i] <- paste(unique(gene_starts$gene_name[gene_idx]), collapse = ";")
+        V(g)$gene_ids[i] <- paste(unique(gene_starts$gene_id[gene_idx]), collapse = ";")
+        V(g)$gene_types[i] <- paste(unique(gene_starts$gene_type[gene_idx]), collapse = ";")
       }
     }
     
