@@ -32,8 +32,8 @@ library(ggraph)     # For network visualization
 #library(visNetwork) # For interactive visualizations
 
 ######### set up variables
-#phenotype="Normal"
-phenotype="TNBC"
+phenotype="Normal"
+#phenotype="TNBC"
 
 # beggers cant be choosers lol
 if(phenotype == "Normal") {
@@ -238,7 +238,6 @@ add_gene_annotations_function <- function(networks, gene_annotations) {
   return(annotated_networks)
 }
 
-
 ######### Load the data
 hic_data <- fread(file_path)
 # fread is for regular delimited files
@@ -377,8 +376,6 @@ intra_graphs <- create_hic_networks_function(hic_data,
                                              qvalue_threshold = my_significance,
                                              resolution = my_resolution)
 
-
-
 ############## get and process annotation 
 # get the genes if they dont exist 
 tcga_annotation <- readGFFAsGRanges("resources/tcga_gencode/gencode.v36.annotation.gtf")
@@ -390,6 +387,9 @@ tcga_annotation <- process_gene_annotations_function(tcga_annotation,
 # # Add annotations to networks
 annotated_networks <- add_gene_annotations_function(intra_graphs, 
                                                     gene_annotations = tcga_annotation)
+
+# save annotation
+saveRDS(tcga_annotation, file = "results/igraph_intra/tcga_annotation.Rds")
 
 # # Check results for one chromosome
 # head(V(annotated_networks$chr1)$genes)
