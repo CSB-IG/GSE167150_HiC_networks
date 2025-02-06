@@ -238,6 +238,48 @@ add_gene_annotations_function <- function(networks, gene_annotations) {
   return(annotated_networks)
 }
 
+# add node type attribute to nodes
+really_create_node_type <- function(graph) {
+  # Get the gene types vector
+  gene_types <- V(graph)$gene_types
+  
+  # Create node_type attribute
+  V(graph)$node_type <- sapply(gene_types, function(gt) {
+    # Check if gene_type is NA
+    if (is.na(gt)) {
+      return("N")
+    }
+    
+    # Check if gene_type contains "protein_coding"
+    if (grepl("protein_coding", gt)) {
+      return("C")
+    } else {
+      return("R")
+    }
+  })
+  
+  return(graph)
+}
+
+# Function to process all networks in a list
+add_ntype_function <- function(network_list) {
+  # Apply the create_node_type function to each network in the list
+  processed_networks <- lapply(network_list, really_create_node_type)
+  return(processed_networks)
+}
+
+# function to add edge type
+add_edge_types <- function(graph) {
+  edge_list <- get.edgelist(graph, names=FALSE)  # Get numeric indices
+  type1 <- V(graph)$node_type[edge_list[,1]]
+  type2 <- V(graph)$node_type[edge_list[,2]]
+  
+  edge_types <- paste(pmin(type1, type2), pmax(type1, type2), sep="-")
+  E(graph)$edge_type <- edge_types
+  return(graph)
+}
+
+
 ######### Load the data
 hic_data <- fread(file_path)
 # fread is for regular delimited files
@@ -388,6 +430,7 @@ tcga_annotation <- process_gene_annotations_function(tcga_annotation,
 annotated_networks <- add_gene_annotations_function(intra_graphs, 
                                                     gene_annotations = tcga_annotation)
 
+
 # save annotation
 saveRDS(tcga_annotation, file = "results/igraph_intra/tcga_annotation.Rds")
 
@@ -396,6 +439,13 @@ saveRDS(tcga_annotation, file = "results/igraph_intra/tcga_annotation.Rds")
 # V(annotated_networks$chr1)$gene_types
 #
 # empty strings are when there arent genes in the node
+
+############## annotate nodes with node type
+annotated_networks <- add_ntype_function(annotated_networks)
+
+############## annotate edges with interaction type
+annotated_networks <- lapply(annotated_networks, add_edge_types)
+
 
 ############## save object 
 if(phenotype == "Normal") {
