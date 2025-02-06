@@ -32,8 +32,8 @@ library(ggraph)     # For network visualization
 #library(visNetwork) # For interactive visualizations
 
 ######### set up variables
-phenotype="Normal"
-#phenotype="TNBC"
+#phenotype="Normal"
+phenotype="TNBC"
 
 # beggers cant be choosers lol
 if(phenotype == "Normal") {
@@ -269,7 +269,7 @@ add_ntype_function <- function(network_list) {
 }
 
 # function to add edge type
-add_edge_types <- function(graph) {
+add_edge_types_function <- function(graph) {
   edge_list <- get.edgelist(graph, names=FALSE)  # Get numeric indices
   type1 <- V(graph)$node_type[edge_list[,1]]
   type2 <- V(graph)$node_type[edge_list[,2]]
@@ -289,7 +289,7 @@ hic_data <- fread(file_path)
 # Check the first few rows
 head(hic_data)
 
-# removeduplicate chr1 column
+# removeduplicate chr1 column (happens because its intrachromosomal)
 hic_data <- hic_data[, !duplicated(colnames(hic_data)), with = FALSE]
 head(hic_data)
 
@@ -444,7 +444,7 @@ saveRDS(tcga_annotation, file = "results/igraph_intra/tcga_annotation.Rds")
 annotated_networks <- add_ntype_function(annotated_networks)
 
 ############## annotate edges with interaction type
-annotated_networks <- lapply(annotated_networks, add_edge_types)
+annotated_networks <- lapply(annotated_networks, add_edge_types_function)
 
 
 ############## save object 
@@ -457,7 +457,6 @@ if(phenotype == "Normal") {
 } else {
   stop("No more phenotypes")
 }
-
 
 
 # #lyt <- layout_with_lgl(chromosome_graphs$chr22)
