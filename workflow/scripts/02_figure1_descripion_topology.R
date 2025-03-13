@@ -23,6 +23,7 @@ library(reshape2)
 library(GenomicRanges)
 library(karyoploteR)
 library(ggplotify)
+library(ggrepel)
 
 ######### set up variables
 normal_path ="results/igraph_intra/normal/40000/normal_intra_graphs_q001_genes.Rds"
@@ -243,6 +244,168 @@ compute_degree_df <- function(graph_list, phenotype) {
   
   return(degree_data)
 }
+
+# 7. zscore distribution plot
+plot_zscore_distribution_function <- function(df, chromosome, outdir_plots) {
+  df_filtered <- df %>% filter(chromosome == !!chromosome)
+  
+  # Define percentiles
+  prob <- seq(0, 1, 0.0001)
+  
+  # Compute quantiles for each phenotype
+  dat <- df_filtered %>% 
+    group_by(phenotype) %>% 
+    summarise(
+      zscore = list(quantile(zscore, probs = prob, na.rm = TRUE)),
+      Percentile = list(prob * 100)
+    ) %>% 
+    unnest(cols = c(zscore, Percentile))
+  
+  # Determine y-axis limits dynamically
+  y_min <- min(dat$zscore, na.rm = TRUE)
+  y_max <- max(dat$zscore, na.rm = TRUE)
+  
+  # Define colors for phenotypes
+  phenotype_colors <- c("Normal" = "#008080", "TNBC" = "darkred")
+  
+  # Create percentile-based plots
+  p1 <- ggplot(dat, aes(Percentile, zscore, colour = phenotype)) +
+    geom_line() +
+    scale_color_manual(values = phenotype_colors) +
+    theme_bw() +
+    ylim(y_min, y_max) + ylab("Z-Score") +
+    scale_x_continuous(limits = c(0, 10), breaks = seq(0, 10, by = 1)) +
+    ggtitle("Lower")
+  
+  p2 <- ggplot(dat, aes(Percentile, zscore, colour = phenotype)) +
+    geom_line() +
+    scale_color_manual(values = phenotype_colors) +
+    theme_bw() +
+    ylim(y_min, y_max) + ylab("Z-Score") +
+    scale_x_continuous(limits = c(90, 100), breaks = seq(90, 100, by = 1)) +
+    ggtitle("Upper")
+  
+  # Create the boxplot (without outliers)
+  p3 <- ggplot(df_filtered, aes(x = phenotype, y = zscore, fill = phenotype)) +
+    geom_boxplot(outliers = FALSE) +
+    scale_fill_manual(values = phenotype_colors) +
+    theme_bw() +
+    ylab("Z-Score (outliers = FALSE)") + xlab("Phenotype") +
+    ggtitle(paste("Z-score Distribution", chromosome)) +
+    theme(legend.position = "none")
+  
+  # Arrange all three plots
+  combined_plot <- p3 + (p1 + p2 +
+                           plot_layout(axes = "collect", guides = "collect")  
+                         & theme(legend.position = 'bottom')) +
+    plot_layout(widths = c(2.5, 5))
+  
+  # Save the plot
+  svg(file.path(outdir_plots, paste0("zscore_distribution_", chromosome, ".svg")),
+      width = 8.5, height = 4.3)
+  print(combined_plot)
+  dev.off()
+}
+
+
+# 8. function to obtain the intersection of nodes 
+intersect_nodes_function <- function(ph1_l, ph2_l, c, nty="C",
+                                     attrs=c("name", "chr", "start", "end", "genes")) {
+  data.frame(name=V(ph1_l[[c]])$name, 
+             node_type=V(ph1_l[[c]])$node_type,
+             regions=paste(V(ph1_l[[c]])$start, V(ph1_l[[c]])$end, sep="-")
+  ) %>%
+    filter(node_type == !!nty) -> n1
+  
+  data.frame(name=V(ph2_l[[c]])$name, 
+             node_type=V(ph2_l[[c]])$node_type,
+             regions=paste(V(ph2_l[[c]])$start, V(ph2_l[[c]])$end, sep="-")
+  ) %>%
+    filter(node_type == !!nty) -> n2
+  
+  #list(n1, n2)
+  n <- n1[n1$regions %in% intersect(n1$regions, n2$regions), "name"]
+  
+  #  return(n)
+  
+  # obtain attributes
+  lapply(attrs, function(a) {
+    get.vertex.attribute(graph = ph1_l[[c]], 
+                         name = a, 
+                         index = n)
+    
+  }) %>%
+    do.call(cbind, .) -> out
+  
+  colnames(out) <- attrs
+  
+  return(out)
+  
+}
+
+# 9. Function to find n points farthest from y=x line
+find_diagonal_outliers <- function(data, x_col, y_col, n = 4) {
+  # Calculate distance from y=x line
+  data$distance_from_diagonal <- abs(data[[y_col]] - data[[x_col]]) / sqrt(2)
+  
+  # Add direction indicator (up or down from diagonal)
+  data$direction <- ifelse(data[[y_col]] > data[[x_col]], "up", "down")
+  
+  # Get indices of n largest distances
+  outlier_indices <- order(data$distance_from_diagonal, decreasing = TRUE)[1:n]
+  
+  return(data[outlier_indices, ])
+}
+
+
+# 10. calculate edge dissimilarity for nodes
+node_dissimilarity_function <- function(chr) {
+  normal_net <- normal_graphs[[chr]]
+  cancer_net <- tnbc_graphs[[chr]]
+  
+  # Get common nodes between the two networks
+  common_nodes <- intersect(V(normal_net)$name, V(cancer_net)$name)
+  
+  # Calculate Jaccard dissimilarity for each common node
+  jaccard_dissimilarity <- sapply(common_nodes, function(node) {
+    # Get neighbors in each network
+    normal_neighbors <- neighbors(normal_net, node)$name
+    cancer_neighbors <- neighbors(cancer_net, node)$name
+    
+    # Calculate Jaccard dissimilarity
+    intersection_size <- length(intersect(normal_neighbors, cancer_neighbors))
+    union_size <- length(union(normal_neighbors, cancer_neighbors))
+    
+    # Handle potential division by zero if node has no neighbors in either network
+    if (union_size == 0) return(0)
+    
+    # Return dissimilarity (1 - similarity)
+    return(1 - intersection_size / union_size)
+  })
+  
+  
+  # Create a data frame of results
+  results <- data.frame(
+    node = common_nodes,
+    dissimilarity = jaccard_dissimilarity,
+    chromosome = chr,
+    start = V(normal_net)[V(normal_net)$name %in% common_nodes]$start,
+    node_type = V(normal_net)[V(normal_net)$name %in% common_nodes]$node_type,
+    genes = V(normal_net)[V(normal_net)$name %in% common_nodes]$genes
+  )
+  
+  # Sort by dissimilarity to find the most changed nodes
+  results <- results[order(results$dissimilarity), ]
+  
+  return(results)
+  
+}
+
+
+
+
+
+
 
 
 
@@ -555,7 +718,7 @@ ggplot(degree_df, aes(x = node_type, y = degree, fill = phenotype)) +
 
 dev.off()
 
-######### POINTS ISSUE
+######### Z score distribution
 # plot the distribution (or density of zscore for the edges, and edge types)
 #
 # normal
@@ -591,115 +754,11 @@ zedges_all$edge_type <- factor(zedges_all$edge_type,
 
 zedges_coding <- zedges_all[zedges_all$edge_type %in% c("C-C", "C-R", "C-N"), ]
 
-test21 <- zedges_coding[zedges_coding$chromosome == "chr21", ]
-# boxplot(test21$zscore~test21$phenotype, horizontal=TRUE)
-# boxplot(test21$zscore~test21$phenotype, horizontal=TRUE, outline=F, notch=T)
-
-####### plot to do lower and higher percentiles
-# Define parameters
-low_percentile <- c(0, 10)     # Adjust range for the lower tail
-high_percentile <- c(90, 100)  # Adjust range for the upper tail
-
-# Define colors for phenotypes
-phenotype_colors <- c("Normal" = "#008080", "TNBC" = "darkred")
-
-# Define percentiles
-prob <- seq(0, 1, 0.0001)
-
-# Compute quantiles for each phenotype
-dat <- test21 %>% 
-  group_by(phenotype) %>% 
-  summarise(
-    zscore = list(quantile(zscore, probs = prob, na.rm = TRUE)),
-    Percentile = list(prob * 100)
-  ) %>% 
-  unnest(cols = c(zscore, Percentile))
-
-# Determine y-axis limits dynamically
-y_min <- min(dat$zscore, na.rm = TRUE)
-y_max <- max(dat$zscore, na.rm = TRUE)
-
-# Create the percentile-based plots
-p1 <- ggplot(dat, aes(Percentile, zscore, colour = phenotype)) +
-  geom_line() +
-  scale_color_manual(values = phenotype_colors) +
-  theme_bw() + #theme(legend.position = "top") +
-  ylim(y_min, y_max) + ylab("Z-Score") +
-  scale_x_continuous(limits = low_percentile, breaks = seq(low_percentile[1], low_percentile[2], by = 1)) +
-  #ggtitle(paste0("Lower ", low_percentile[2], "% Percentile"))
-  ggtitle("Lower")
-
-p2 <- ggplot(dat, aes(Percentile, zscore, colour = phenotype)) +
-  geom_line() +
-  scale_color_manual(values = phenotype_colors) +
-  theme_bw() + #theme(legend.position = "top") +
-  ylim(y_min, y_max) + ylab("Z-Score") +
-  scale_x_continuous(limits = high_percentile, breaks = seq(high_percentile[1], high_percentile[2], by = 1)) +
-  #ggtitle(paste0("Upper ", high_percentile[2], "% Percentile"))
-  ggtitle("Upper")
-
-# Create the boxplot (without outliers)
-p3 <- ggplot(test21, aes(x = phenotype, y = zscore, fill = phenotype)) +
-  geom_boxplot(outliers = FALSE) +  # Remove outliers
-  scale_fill_manual(values = phenotype_colors) +
-  theme_bw() +
-  ylab("Z-Score\t(outliers = FALSE)") + xlab("Phenotype") +
-  ggtitle(paste("Z-score Distribution", "Chr21")) +
-#  labs(title = "Z-Score Distribution by Phenotype", x = "", y = "Z-Score") +
-  theme(legend.position = "none")  # Hide legend for boxplot
-
-# Arrange all three plots
-#p3 + plot_spacer() + p1 + p2 +
-svg(file.path(outdir_plots, paste0("zscore_distribution_", "chr21", ".svg")), 
-    width = 8.5, height = 4.3)
-
-p3 + (p1 + p2 +
-  plot_layout(axes="collect", guides = "collect")  & theme(legend.position = 'bottom')) +
-  plot_layout(widths = c(2.5, 5)) 
-
-dev.off()    
+# plot each chromosomes zscore distribution 
+lapply(chromosomes, function(chr) plot_zscore_distribution_function(zedges_coding, chr, outdir_plots))
 
 
-
-
-
-# # Define colors for phenotypes
-# phenotype_colors <- c("Normal" = "#008080", "TNBC" = "darkred")
-# 
-# # Define percentiles
-# prob <- seq(0, 1, 0.0001)
-# 
-# # Compute quantiles for each phenotype
-# dat <- test21 %>% 
-#   group_by(phenotype) %>% 
-#   summarise(
-#     zscore = list(quantile(zscore, probs = prob, na.rm = TRUE)),
-#     Percentile = list(prob * 100)
-#   ) %>% 
-#   unnest(cols = c(zscore, Percentile))
-# 
-# # Create a single plot with full percentile range
-# ggplot(dat, aes(Percentile, zscore, colour = phenotype)) +
-#   geom_line() +
-#   scale_color_manual(values = phenotype_colors) +
-#   theme_bw() +
-#   labs(title = "Quantile Plot of Z-Scores", 
-#        x = "Percentile", 
-#        y = "Z-Score") +
-# #  xlim(90, 100) +
-#   theme(legend.title = element_blank())
-
-
-
-
-
-
-
-
-
-
-
-# WEIGHTED DEGREE
+########### WEIGHTED DEGREE
 svg(file.path(outdir_plots, "fig1_vln_node_degree_WEIGHTED_ZSCORE.svg"), width = 12, height = 8)
 
 ggplot(degree_df, aes(x = node_type, y = w_degree_zscore, fill = phenotype)) +
@@ -712,23 +771,337 @@ ggplot(degree_df, aes(x = node_type, y = w_degree_zscore, fill = phenotype)) +
   theme_minimal() +
   theme(legend.position = "top") +
   #  theme(axis.text.x = element_text(angle = 25, hjust = 1)) +
-  labs(title = "Node Degree Distribution by Node Type",
+  labs(title = "Node Weighted Degree Distribution (Z-Score) by Node Type",
        x = "\nNode Type",
-       y = "Weighted Degree (zscore)",
+       y = "Weighted Degree (Z-Score)",
        fill = "Phenotype") +
   facet_wrap(~chr, scales="free_y")
 
 dev.off()
 
 ############ HUBS for coding nodes
-
+# Nodes that maintain their high degree in cancer versus those that lose connections
 # a hub in normal, lost in cancer
-
 # a hub in cancer that was not there in normal
 
+# rbind phenos
+# plot X and Y degree and weighted degree
+# facet wrap by chromosome
+# find the x (5?) most extreme values per quadrant and do ggtext with genes
+
+# get common nodes for each chromosome
+common_nodes_all_chr <- lapply(chromosomes, intersect_nodes_function, 
+                               ph1_l = normal_graphs, ph2_l = tnbc_graphs)
+
+names(common_nodes_all_chr) <- chromosomes
+
+# get degrees and weighted degrees for both phenotypes
+lapply(chromosomes, function(c) {
+  n <- common_nodes_all_chr[[c]][,"name"]
+  
+  data.frame(
+    common_nodes_all_chr[[c]], 
+    degree_normal = degree(normal_graphs[[c]], v = n),
+    w_degree_normal = strength(normal_graphs[[c]], 
+                                weights = E(normal_graphs[[c]])$zscore, vids = n),
+    degree_tnbc = degree(tnbc_graphs[[c]], v = n),
+    w_degree_tnbc = strength(tnbc_graphs[[c]], 
+                              weights = E(tnbc_graphs[[c]])$zscore, vids = n)
+  )
+
+}) -> degree_data_common_nodes
+
+#names(degree_data_common_nodes) <- chromosomes
+
+degree_data_common_nodes <- do.call(rbind, degree_data_common_nodes)
+
+degree_data_common_nodes$chr <- factor(degree_data_common_nodes$chr, 
+                                       levels = chromosomes)
+
+# plot(degree_data_common_nodes[["chrX"]]$degree_normal,
+#      degree_data_common_nodes[["chrX"]]$degree_tnbc)
+# 
+# abline(1,1, col="blue")
+
+# abline(lm(degree_data_common_nodes[["chr21"]]$w_degree_normal ~
+#    degree_data_common_nodes[["chr21"]]$w_degree_tnbc), col="blue")
+
+# Create outlier dataset first
+outlier_data <- degree_data_common_nodes %>% 
+  group_by(chr) %>% 
+  group_modify(~find_diagonal_outliers(.x, "w_degree_normal", "w_degree_tnbc"))
+
+# just label coding
+unlist(lapply(outlier_data$genes, function(x) {
+  s <- unlist(strsplit(x, ";"))
+  s <- s[s %in% tcga_annotation$gene_name[tcga_annotation$gene_type == "protein_coding"]]
+  
+  paste(s, collapse=";")
+
+})) -> outlier_data$genes
 
 
 
+svg(file.path(outdir_plots, "scatterplot_weighted_degree_small.svg"),  width = 18, height = 16)
+
+# Create the enhanced plot
+ggplot(degree_data_common_nodes, aes(x = w_degree_normal, y = w_degree_tnbc)) +
+  # Add diagonal y=x line first
+  geom_abline(slope = 1, intercept = 0, color = "#2c3e50", 
+              linetype = "dashed", alpha = 0.5) +
+  
+  # Add regular points
+  geom_point(data = . %>% anti_join(outlier_data, by = "name"),  # non-outlier points
+             size = 1, alpha = 0.6, color = "#4a4e4d") +
+  
+  # Add colored outlier points
+  geom_point(data = outlier_data,
+             aes(color = direction),
+             size = 2) +  # Make outlier points slightly larger
+  
+  # Add labels for outliers with colored boxes
+  geom_label_repel(
+    data = outlier_data,
+    aes(label = genes,
+        fill = direction),  # Color based on up/down
+    size = 2.5,
+    max.overlaps = Inf,
+    box.padding = 0.5,
+    label.padding = unit(0.15, "lines"),
+    segment.color = "#666666",
+    alpha = 0.7,  # Semi-transparent boxes
+    color = "black"  # Text color
+  ) +
+  
+  # Define colors for up/down
+  scale_fill_manual(values = c(
+    "up" = "#ff9999",    # Light red for upregulated
+    "down" = "#99ccff"   # Light blue for downregulated
+  )) +
+  
+  # Match point colors to label colors
+  scale_color_manual(values = c(
+    "up" = "#ff4444",    # Darker red for points
+    "down" = "#4477ff"   # Darker blue for points
+  )) +
+  
+  # Customize theme
+  theme_minimal() +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(color = "#eeeeee"),
+    strip.text = element_text(face = "bold"),
+    axis.title = element_text(size = 10),
+    plot.title = element_text(size = 12, face = "bold"),
+    legend.position = "none"  # Hide the legend
+  ) +
+  
+  # Add labels
+  labs(
+    x = "Weighted Degree Z-score (Normal)",
+    y = "Weighted Degree Z-score (TNBC)",
+    title = "Changes in Hi-C Interaction Patterns between Normal and TNBC Samples"
+  ) +
+  
+  # Facet by chromosome
+  facet_wrap(~chr, scales = "free")
+
+dev.off()
+
+
+### examples
+# PTEN and PXDC1
+
+pxdc1_node = degree_data_common_nodes[grepl("PXDC1", degree_data_common_nodes$genes), ]
+pxdc1_node = degree_data_common_nodes[grepl("PXDC1", degree_data_common_nodes$genes), ]
+
+
+
+############ SIMILARITY INDEX
+
+
+############ DISTANCE
+
+calculate_distance_zscores <- function(graph) {
+  # Check if the graph has a distance attribute
+  if (!"distance" %in% edge_attr_names(graph)) {
+    stop("Graph must have a 'distance' edge attribute")
+  }
+  
+  # Get the distance values
+  distances <- E(graph)$distance
+  
+  # Calculate z-scores
+  distance_mean <- mean(distances, na.rm = TRUE)
+  distance_sd <- sd(distances, na.rm = TRUE)
+  zscores <- (distances - distance_mean) / distance_sd
+  
+  # Add z-scores as a new edge attribute
+  E(graph)$distance_zscore <- zscores
+  
+  # Return the modified graph
+  return(graph)
+}
+
+#hist(E(calculate_distance_zscores(normal_graphs$chr1))$distance_zscore)
+
+normal_graphs <- lapply(normal_graphs, calculate_distance_zscores)
+tnbc_graphs <- lapply(tnbc_graphs, calculate_distance_zscores)
+
+# Function get the distances
+get_dists <- function(c, glist, ph) {
+  g = glist[[c]]
+  
+  data.frame(dist=E(g)$distance,
+             zdist=E(g)$distance_zscore,
+             edge_type=E(g)$edge_type,
+             chromosome=c,
+             phenotype=ph)
+}
+
+# get them all
+rbind(
+  do.call(rbind, lapply(chromosomes, get_dists, glist=normal_graphs, ph="Normal")),
+  do.call(rbind, lapply(chromosomes, get_dists, glist=tnbc_graphs, ph="TNBC"))
+) -> distances_df
+
+
+distances_df_coding <- distances_df[grepl("C", distances_df$edge_type),  ]
+
+distances_df_coding$chromosome <- factor(distances_df_coding$chromosome, 
+                                         levels = chromosomes)
+
+distances_df_coding$intype <- paste(distances_df_coding$phenotype, distances_df_coding$edge_type)
+distances_df_coding$intype <- factor(distances_df_coding$intype, 
+                                     levels = c("Normal C-C", "Normal C-R", "Normal C-N",
+                                                "TNBC C-C", "TNBC C-R", "TNBC C-N"))
+
+
+
+svg(file.path(outdir_plots, "fig1_hist_edge_GENOMICDIST.svg"), width = 10, height = 10)
+
+# ggplot(distances_df_coding, aes(x = dist/1000000, fill = phenotype)) +
+#   geom_histogram(bins = 30, alpha = 0.45, position = "identity") +
+#   labs(title = "Edge Distance by Chromosome",
+#        x = "\nGenomic Distance (Mb)",
+#        y = "Count") +
+#   theme_minimal() +
+# #  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+#   scale_fill_manual(values = c("Normal" = "#008080", "TNBC" = "darkred")) + 
+#   #theme_minimal() + 
+#   facet_wrap(~chromosome, scales="free")
+
+ggplot(distances_df_coding, aes(x = dist/1000000, fill = phenotype, color = phenotype)) +
+  geom_histogram(bins = 30, alpha = 0.3, position = "identity") +  # Set alpha for transparency
+  labs(title = "Edge Distance by Chromosome",
+       x = "\nGenomic Distance (Mb)",
+       y = "Count",
+       fill = "Phenotype",
+       color = "Phenotype") + 
+  theme_minimal() +
+  theme(legend.position = "top") +
+  scale_fill_manual(values = c("Normal" = "#008080", "TNBC" = "darkred")) +  # Custom fill colors
+  scale_color_manual(values = c("Normal" = "#008080", "TNBC" = "darkred")) +  # Matching outline colors
+  facet_wrap(~chromosome, scales = "free")
+
+dev.off()
+
+# density for supplementary
+svg(file.path(outdir_plots, "fig1_hist_edge_GENOMICDIST_TYPE.svg"),  width = 10.5, height = 7)
+ggplot(distances_df_coding, aes(x = dist/1000000, color = intype, linetype = intype)) +
+  geom_density(size = 1, lwd=1) +
+  scale_linetype_manual(values = c("Normal C-C" = "solid", "Normal C-R" = "dashed", "Normal C-N" = "dotted",
+                                   "TNBC C-C" = "solid", "TNBC C-R" = "dashed", "TNBC C-N" = "dotted")) +
+  scale_color_manual(values = c("Normal C-C" = "#008080", "Normal C-R" = "#66b2b2", "Normal C-N" = "#b2d8d8",
+                                "TNBC C-C" = "darkred", "TNBC C-R" = "#b22222", "TNBC C-N" = "#e9967a")) +
+  labs(title = "Edge Genomic Distance by Chromosome",
+       x = "\nDistance (Mb)",
+       y = "Density") +
+  theme_minimal() +
+  #theme(axis.text.x = element_text(angle = 25, hjust = 1), legend.position = "top") +
+  facet_wrap(~chromosome, scales = "free", ncol=4)
+
+dev.off()
+
+######### set up a 1% threshold for long range interactions 
+# threshold based edge filtering
+# Function to filter network keeping top 1% of edges by distance
+filter_network_by_distance <- function(graph, percentile = 0.99) {
+  # Get all distance values
+  distances <- E(graph)$distance
+  
+  # Calculate the threshold for top 1%
+  distance_threshold <- quantile(distances, percentile)
+  
+  # Create subgraph keeping only edges above threshold
+  # Keep all vertices but only edges that meet our criteria
+  subgraph_from_edges(graph, 
+                 which(E(graph)$distance >= distance_threshold), 
+                 delete.vertices = TRUE)
+}
+
+# Apply to all chromosomes
+filt_normal_graphs <- lapply(normal_graphs, filter_network_by_distance)
+filt_tnbc_graphs <- lapply(tnbc_graphs, filter_network_by_distance)
+
+
+################## Similarity INDEX
+# which nodes retain their interactions, which nodes lose them
+# JACCARD DISSIMILARITY 
+#Dissimilarity(node) = 1 - |Neighbors_normal ∩ Neighbors_cancer| / |Neighbors_normal ∪ Neighbors_cancer|
+
+# calculate node dissimilarity
+jaccard_dissimilarity_all <- lapply(chromosomes, node_dissimilarity_function)
+jaccard_dissimilarity_all <- do.call(rbind, jaccard_dissimilarity_all)
+
+jaccard_dissimilarity_all$chromosome <- factor(jaccard_dissimilarity_all$chromosome, 
+                                               levels = chromosomes)
+
+
+jaccard_dissimilarity_genes <- jaccard_dissimilarity_all[jaccard_dissimilarity_all$node_type %in% c("C", "R"), ]
+
+# Filter nodes with dissimilarity index below 0.25
+low_dissimilarity_nodes <- jaccard_dissimilarity_genes %>%
+  filter(dissimilarity < 0.25)
+
+# update geneID labels with current annotation names
+#low_dissimilarity_nodes$genes[grepl("AC114808.1", low_dissimilarity_nodes$genes)] <- "ENSG00000235403"
+
+# Plot
+svg(file.path(outdir_plots, "box_node_dissimilarity.svg"),  width = 11, height = 6)
+
+ggplot(jaccard_dissimilarity_genes, aes(chromosome, dissimilarity)) + 
+  geom_boxplot(notch = TRUE, fill = "grey85") +
+  geom_text_repel(data = low_dissimilarity_nodes, aes(label = genes), 
+                  size = 3, box.padding = 0.5, col= "darkblue",
+                  point.padding = 0.3, max.overlaps = Inf) +
+  ggtitle("Rewiring of Hi-C Interactions by Node") +
+  theme(axis.text.x = element_text(angle = 35, hjust = 1)) +
+  ylab("Jaccard Dissimilarity Index\n") + 
+  xlab("\nChromosome")
+
+dev.off()
+
+
+# svg(file.path(outdir_plots, "box_node_dissimilarity.svg"),  width = 11, height = 6)
+# 
+# ggplot(jaccard_dissimilarity_genes, aes(chromosome, dissimilarity)) + 
+#   geom_boxplot(notch = TRUE, fill="grey85") +
+#   ggtitle("Rewiring of Hi-C Interactions by Node") +
+#   theme(axis.text.x = element_text(angle = 35, hjust = 1)) +
+#   ylab("Jaccard Dissimilarity Index\n") + xlab("\nChromosome")
+# 
+# dev.off()
+
+
+#head(jaccard_dissimilarity_genes)
+
+####### genome ideogram
+
+
+
+#################################################################################
+#################################################################################
 
 
 
@@ -797,10 +1170,10 @@ generate_data <- function(chr, n) {
   
   # Introduce chromosome-specific variations (skip if NA)
   if (!is.na(chr_num)) {
-    if (chr_num %% 3 == 0) {
+    if (chr_num %% 24 == 0) {
       y <- x + abs(rnorm(n, 0, 0.2))  # More points above the diagonal
     } else if (chr_num %% 4 == 0) {
-      y <- x + rnorm(n, 0, 0.05)  # Less variation, more clustering on diagonal
+      y <- x + rnorm(n, 0, 0.07)  # Less variation, more clustering on diagonal
     }
   }
   
