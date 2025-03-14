@@ -587,8 +587,12 @@ compare_conditions <- function(normal_network, tnbc_network, chromosome) {
   }
   
   # Create pair identifiers for matching
-  normal_paired[, pair_id := paste(gene1, gene2, sep = "_")]
-  tnbc_paired[, pair_id := paste(gene1, gene2, sep = "_")]
+  normal_paired[, pair_id := ifelse(gene1 < gene2, paste(gene1, gene2, sep = "_"), paste(gene2, gene1, sep = "_"))]
+  tnbc_paired[, pair_id := ifelse(gene1 < gene2, paste(gene1, gene2, sep = "_"), paste(gene2, gene1, sep = "_"))]
+  
+  # Remove duplicate pairs
+  normal_paired <- unique(normal_paired, by = "pair_id")
+  tnbc_paired <- unique(tnbc_paired, by = "pair_id")
   
   # Set keys for joining
   setkey(normal_paired, pair_id)
