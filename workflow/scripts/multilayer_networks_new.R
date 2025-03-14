@@ -1216,8 +1216,8 @@ run_multilayer_analysis <- function(chromosomes, normal_muxviz_networks, tnbc_mu
   require(data.table)
   
   # Create output directories if they don't exist
-  dir.create("figures", showWarnings = FALSE, recursive = TRUE)
-  dir.create("results/significant_changes", showWarnings = FALSE, recursive = TRUE)
+  dir.create("results/multilayer/figures", showWarnings = FALSE, recursive = TRUE)
+  dir.create("results/multilayer/significant_changes", showWarnings = FALSE, recursive = TRUE)
   
   # Check which chromosomes have data in both conditions
   available_chrs <- chromosomes[chromosomes %in% names(normal_muxviz_networks) & 
@@ -1250,7 +1250,7 @@ run_multilayer_analysis <- function(chromosomes, normal_muxviz_networks, tnbc_mu
     )]
     
     # 2. Find significant changes
-    significant_changes_file <- paste0("results/significant_changes/", chr, "_significant_changes.txt")
+    significant_changes_file <- paste0("results/multilayer/significant_changes/", chr, "_significant_changes.txt")
     significant_changes <- find_significant_changes(
       comparison_results,
       hic_threshold = 1,
@@ -1263,7 +1263,7 @@ run_multilayer_analysis <- function(chromosomes, normal_muxviz_networks, tnbc_mu
     tnbc_communities <- detect_multiplex_communities(tnbc_muxviz_networks[[chr]])
     
     # 4. Compare communities
-    community_comparison <- compare_communities(normal_communities, tnbc_communities, output_dir = "results/community_comparison")
+    community_comparison <- compare_communities(normal_communities, tnbc_communities, output_dir = "results/multilayer/community_comparison")
     
     # Store community change results
     if (nrow(community_comparison$summary) > 0) {
@@ -1290,13 +1290,25 @@ run_multilayer_analysis <- function(chromosomes, normal_muxviz_networks, tnbc_mu
     }
     
     # 6. Visualizations
-    plot_file <- paste0("figures/", chr, "_structure_expression.pdf")
-    pdf(plot_file, width = 10, height = 8)
+    plot_file_pdf <- paste0("results/multilayer/figures/", chr, "_structure_expression.pdf")
+    plot_file_svg <- paste0("results/multilayer/figures/", chr, "_structure_expression.svg")
+    pdf(plot_file_pdf, width = 10, height = 8)
+    print(plot_structure_expression_relationship(comparison_results, significant_changes))
+    dev.off()
+    svg(plot_file_svg, width = 10, height = 8)
     print(plot_structure_expression_relationship(comparison_results, significant_changes))
     dev.off()
     
-    plot_file <- paste0("figures/", chr, "_communities_normal.pdf")
-    pdf(plot_file, width = 10, height = 10)
+    plot_file_pdf <- paste0("results/multilayer/figures/", chr, "_communities_normal.pdf")
+    plot_file_svg <- paste0("results/multilayer/figures/", chr, "_communities_normal.svg")
+    pdf(plot_file_pdf, width = 10, height = 10)
+    plot_multiplex_communities(
+      normal_muxviz_networks[[chr]], 
+      normal_communities, 
+      title = paste("Normal -", chr)
+    )
+    dev.off()
+    svg(plot_file_svg, width = 10, height = 10)
     plot_multiplex_communities(
       normal_muxviz_networks[[chr]], 
       normal_communities, 
@@ -1304,8 +1316,16 @@ run_multilayer_analysis <- function(chromosomes, normal_muxviz_networks, tnbc_mu
     )
     dev.off()
     
-    plot_file <- paste0("figures/", chr, "_communities_tnbc.pdf")
-    pdf(plot_file, width = 10, height = 10)
+    plot_file_pdf <- paste0("results/multilayer/figures/", chr, "_communities_tnbc.pdf")
+    plot_file_svg <- paste0("results/multilayer/figures/", chr, "_communities_tnbc.svg")
+    pdf(plot_file_pdf, width = 10, height = 10)
+    plot_multiplex_communities(
+      tnbc_muxviz_networks[[chr]], 
+      tnbc_communities, 
+      title = paste("TNBC -", chr)
+    )
+    dev.off()
+    svg(plot_file_svg, width = 10, height = 10)
     plot_multiplex_communities(
       tnbc_muxviz_networks[[chr]], 
       tnbc_communities, 
@@ -1336,13 +1356,21 @@ run_multilayer_analysis <- function(chromosomes, normal_muxviz_networks, tnbc_mu
   # Plot aggregate results
   aggregate_plots <- plot_aggregate_results(summary_results)
   
-  plot_file <- paste0("figures/aggregate_correlation_plot.pdf")
-  pdf(plot_file, width = 12, height = 8)
+  plot_file_pdf <- paste0("results/multilayer/figures/aggregate_correlation_plot.pdf")
+  plot_file_svg <- paste0("results/multilayer/figures/aggregate_correlation_plot.svg")
+  pdf(plot_file_pdf, width = 12, height = 8)
+  print(aggregate_plots$correlation_plot)
+  dev.off()
+  svg(plot_file_svg, width = 12, height = 8)
   print(aggregate_plots$correlation_plot)
   dev.off()
   
-  plot_file <- paste0("figures/aggregate_community_changes.pdf")
-  pdf(plot_file, width = 12, height = 8)
+  plot_file_pdf <- paste0("results/multilayer/figures/aggregate_community_changes.pdf")
+  plot_file_svg <- paste0("results/multilayer/figures/aggregate_community_changes.svg")
+  pdf(plot_file_pdf, width = 12, height = 8)
+  print(aggregate_plots$community_change_plot)
+  dev.off()
+  svg(plot_file_svg, width = 12, height = 8)
   print(aggregate_plots$community_change_plot)
   dev.off()
   
