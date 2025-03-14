@@ -67,16 +67,17 @@ lookup_gene_positions <- function(mi_table, annotation) {
   
   # Rename columns for clarity
   colnames(annotation_df)[colnames(annotation_df) == "gene_id"] <- "gene"
+  colnames(annotation_df)[colnames(annotation_df) == "gene_name"] <- "gene_name"
   
-  # Merge mi_table with annotation to get genomic positions of gene1
-  mi_table <- merge(mi_table, annotation_df[, c("gene", "start", "end", "chromosome")], 
+  # Merge mi_table with annotation to get genomic positions and names of gene1
+  mi_table <- merge(mi_table, annotation_df[, c("gene", "start", "end", "chromosome", "gene_name")], 
                     by.x = "gene1", by.y = "gene", all.x = TRUE)
-  colnames(mi_table)[(ncol(mi_table)-2):(ncol(mi_table))] <- c("start_gene1", "end_gene1", "chromosome_gene1")
+  colnames(mi_table)[(ncol(mi_table)-3):(ncol(mi_table))] <- c("start_gene1", "end_gene1", "chromosome_gene1", "gene_name1")
   
-  # Merge mi_table with annotation to get genomic positions of gene2
-  mi_table <- merge(mi_table, annotation_df[, c("gene", "start", "end", "chromosome")], 
+  # Merge mi_table with annotation to get genomic positions and names of gene2
+  mi_table <- merge(mi_table, annotation_df[, c("gene", "start", "end", "chromosome", "gene_name")], 
                     by.x = "gene2", by.y = "gene", all.x = TRUE)
-  colnames(mi_table)[(ncol(mi_table)-2):(ncol(mi_table))] <- c("start_gene2", "end_gene2", "chromosome_gene2")
+  colnames(mi_table)[(ncol(mi_table)-3):(ncol(mi_table))] <- c("start_gene2", "end_gene2", "chromosome_gene2", "gene_name2")
   
   # Set chromosome order
   mi_table$chromosome_gene1 <- factor(mi_table$chromosome_gene1, levels = paste0("chr", c(1:22, "X")))
@@ -136,8 +137,8 @@ create_muxviz_multilayer_network <- function(hic_graph, mi_data) {
   # Extract gene coordinates from MI data
   # Create a data frame of all unique genes with their positions
   all_genes_info <- rbind(
-    data.frame(gene = mi_data$gene1, chr = mi_data$Chromosome, start = mi_data$start_gene1, end = mi_data$end_gene1),
-    data.frame(gene = mi_data$gene2, chr = mi_data$Chromosome, start = mi_data$start_gene2, end = mi_data$end_gene2)
+    data.frame(gene = mi_data$gene_name1, chr = mi_data$Chromosome, start = mi_data$start_gene1, end = mi_data$end_gene1),
+    data.frame(gene = mi_data$gene_name2, chr = mi_data$Chromosome, start = mi_data$start_gene2, end = mi_data$end_gene2)
   )
   
   # Remove duplicates to get unique gene entries
@@ -147,13 +148,13 @@ create_muxviz_multilayer_network <- function(hic_graph, mi_data) {
   gene1_gr <- GRanges(
     seqnames = mi_data$Chromosome,
     ranges = IRanges(start = mi_data$start_gene1, width = 1),
-    gene = mi_data$gene1
+    gene = mi_data$gene_name1
   )
   
   gene2_gr <- GRanges(
     seqnames = mi_data$Chromosome,
     ranges = IRanges(start = mi_data$start_gene2, width = 1),
-    gene = mi_data$gene2
+    gene = mi_data$gene_name2
   )
   
   # Combine all genes and find unique entries
@@ -195,8 +196,8 @@ create_muxviz_multilayer_network <- function(hic_graph, mi_data) {
   
   # MI layer edges
   mi_edges <- data.frame(
-    from = mi_data$gene1,
-    to = mi_data$gene2,
+    from = mi_data$gene_name1,
+    to = mi_data$gene_name2,
     weight = mi_data$MI,
     stringsAsFactors = FALSE
   )
@@ -228,7 +229,7 @@ create_muxviz_multilayer_network <- function(hic_graph, mi_data) {
   )
   
   # All unique nodes in MI layer with proper genomic coordinates
-  all_genes <- unique(c(mi_data$gene1, mi_data$gene2))
+  all_genes <- unique(c(mi_data$gene_name1, mi_data$gene_name2))
   
   # Create MI layer nodes with proper start and end positions
   mi_layer_nodes <- merge(
@@ -344,42 +345,57 @@ write_muxviz_files <- function(muxviz_net, output_dir, prefix = "multilayer", wr
     dir.create(output_dir, recursive = TRUE)
   }
   
-  # Write basic edge list for MuxViz standard format
-  write.table(
-    muxviz_net$edges[, c("layerID", "node1", "node2", "weight")],
-    file = file.path(output_dir, paste0(prefix, "_edges.txt")),
-    row.names = FALSE, col.names = FALSE, quote = FALSE, sep = " "
-  )
+  # Define file paths
+  edge_file <- file.path(output_dir, paste0(prefix, "_edges.txt"))
+  extended_edge_file <- file.path(output_dir, paste0(prefix, "_edges_extended.txt"))
+  layer_file <- file.path(output_dir, paste0(prefix, "_layers.txt"))
+  coupling_file <- file.path(output_dir, paste0(prefix, "_couplings.txt"))
+  node_metadata_file <- file.path(output_dir, paste0(prefix, "_nodes_metadata.txt"))
   
-  # Write extended edge attributes if requested
-  if (write_extended_attributes) {
+  # Write basic edge list for MuxViz standard format if it doesn't exist
+  if (!file.exists(edge_file)) {
+    write.table(
+      muxviz_net$edges[, c("layerID", "node1", "node2", "weight")],
+      file = edge_file,
+      row.names = FALSE, col.names = FALSE, quote = FALSE, sep = " "
+    )
+  }
+  
+  # Write extended edge attributes if requested and if the file doesn't exist
+  if (write_extended_attributes && !file.exists(extended_edge_file)) {
     write.table(
       muxviz_net$edges,
-      file = file.path(output_dir, paste0(prefix, "_edges_extended.txt")),
+      file = extended_edge_file,
       row.names = FALSE, col.names = TRUE, quote = FALSE, sep = "\t"
     )
   }
   
-  # Write layer information
-  write.table(
-    muxviz_net$layer_info,
-    file = file.path(output_dir, paste0(prefix, "_layers.txt")),
-    row.names = FALSE, col.names = FALSE, quote = FALSE, sep = " "
-  )
+  # Write layer information if it doesn't exist
+  if (!file.exists(layer_file)) {
+    write.table(
+      muxviz_net$layer_info,
+      file = layer_file,
+      row.names = FALSE, col.names = FALSE, quote = FALSE, sep = " "
+    )
+  }
   
-  # Write interlayer edges (coupling)
-  write.table(
-    muxviz_net$interlayer_edges[, c("node", "nodeLayer", "connectedNode", "connectedLayer", "weight")],
-    file = file.path(output_dir, paste0(prefix, "_couplings.txt")),
-    row.names = FALSE, col.names = FALSE, quote = FALSE, sep = " "
-  )
+  # Write interlayer edges (coupling) if it doesn't exist
+  if (!file.exists(coupling_file)) {
+    write.table(
+      muxviz_net$interlayer_edges[, c("node", "nodeLayer", "connectedNode", "connectedLayer", "weight")],
+      file = coupling_file,
+      row.names = FALSE, col.names = FALSE, quote = FALSE, sep = " "
+    )
+  }
   
-  # Write node metadata
-  write.table(
-    muxviz_net$nodes,
-    file = file.path(output_dir, paste0(prefix, "_nodes_metadata.txt")),
-    row.names = FALSE, col.names = TRUE, quote = FALSE, sep = "\t"
-  )
+  # Write node metadata if it doesn't exist
+  if (!file.exists(node_metadata_file)) {
+    write.table(
+      muxviz_net$nodes,
+      file = node_metadata_file,
+      row.names = FALSE, col.names = TRUE, quote = FALSE, sep = "\t"
+    )
+  }
   
   return(invisible(output_dir))
 }
@@ -617,7 +633,7 @@ compare_conditions <- function(normal_network, tnbc_network, chromosome) {
 
 # ---------------- FIND SIGNIFICANT CHANGES FUNCTION ----------------
 
-find_significant_changes <- function(comparison_results, hic_threshold = 1, mi_threshold = 0.5) {
+find_significant_changes <- function(comparison_results, hic_threshold = 1, mi_threshold = 0.5, output_file = NULL) {
   require(data.table)
   
   # Early validation
@@ -645,6 +661,18 @@ find_significant_changes <- function(comparison_results, hic_threshold = 1, mi_t
                                         ifelse(hic_fold_change > 0 & mi_fold_change < 0, "HiC_Up_MI_Down",
                                                "HiC_Down_MI_Up")))
     ]
+  }
+  
+  # Write results to file if output_file is provided
+  if (!is.null(output_file) && nrow(significant_changes) > 0) {
+    write.table(
+      significant_changes,
+      file = output_file,
+      row.names = FALSE,
+      col.names = TRUE,
+      quote = FALSE,
+      sep = "\t"
+    )
   }
   
   return(significant_changes)
@@ -745,7 +773,7 @@ detect_multiplex_communities <- function(muxviz_network) {
 
 # ---------------- COMPARE COMMUNITIES FUNCTION ----------------
 
-compare_communities <- function(normal_communities, tnbc_communities) {
+compare_communities <- function(normal_communities, tnbc_communities, output_dir = NULL) {
   require(data.table)
   
   # Early validation
@@ -836,6 +864,19 @@ compare_communities <- function(normal_communities, tnbc_communities) {
   summary_stats$mi_nodes <- mi_stats$nodes
   summary_stats$mi_changed <- mi_stats$changed
   summary_stats$mi_percent_changed <- mi_stats$percent_changed
+  
+  # Write results to files if output_dir is provided
+  if (!is.null(output_dir)) {
+    if (!dir.exists(output_dir)) {
+      dir.create(output_dir, recursive = TRUE)
+    }
+    
+    node_changes_file <- file.path(output_dir, "node_community_changes.csv")
+    summary_file <- file.path(output_dir, "community_changes_summary.csv")
+    
+    fwrite(node_community_changes, node_changes_file)
+    fwrite(summary_stats, summary_file)
+  }
   
   return(list(
     node_changes = node_community_changes,
@@ -954,6 +995,7 @@ analyze_community_contents <- function(communities, gene_annotation) {
 # Plot structure-expression relationship
 plot_structure_expression_relationship <- function(comparison, significant_changes = NULL) {
   require(ggplot2)
+  require(ggrepel)
   
   # Early validation
   if (is.null(comparison) || 
@@ -1003,6 +1045,22 @@ plot_structure_expression_relationship <- function(comparison, significant_chang
                         size = 2, alpha = 0.8) +
       scale_color_manual(values = pattern_colors, name = "Change Pattern") +
       guides(color = guide_legend(title = "Change Pattern"))
+    
+    # Add labels for significant points using pair_id
+    if ("pair_id" %in% names(significant_changes)) {
+      significant_changes[, quadrant := ifelse(hic_fold_change > 0 & mi_fold_change > 0, "Q1",
+                                               ifelse(hic_fold_change < 0 & mi_fold_change > 0, "Q2",
+                                                      ifelse(hic_fold_change < 0 & mi_fold_change < 0, "Q3", "Q4")))]
+      
+      labeled_points <- significant_changes[, .SD[1:min(.N, 3)], by = quadrant]
+      
+      p <- p + geom_text_repel(data = labeled_points, 
+                               aes(label = pair_id), 
+                               size = 3, 
+                               box.padding = 0.3, 
+                               point.padding = 0.3, 
+                               max.overlaps = Inf)
+    }
   }
   
   return(p)
@@ -1112,12 +1170,19 @@ plot_aggregate_results <- function(summary_results) {
   correlations <- as.data.table(summary_results$correlations)
   community_changes <- as.data.table(summary_results$community_changes)
   
+  # Define genomic order
+  genomic_order <- c(paste0("chr", 1:22), "chrX")
+  
+  # Set factor levels for chromosome column
+  correlations[, chromosome := factor(chromosome, levels = genomic_order)]
+  community_changes[, chromosome := factor(chromosome, levels = genomic_order)]
+  
   # Plot 1: Correlations by chromosome
   correlation_plot <- ggplot(correlations) +
     geom_point(aes(x = chromosome, y = normal_correlation, color = "Normal"), size = 3) +
     geom_point(aes(x = chromosome, y = tnbc_correlation, color = "TNBC"), size = 3) +
     geom_point(aes(x = chromosome, y = change_correlation, color = "Change"), size = 3, shape = 17) +
-    scale_color_manual(values = c("Normal" = "blue", "TNBC" = "red", "Change" = "purple"),
+    scale_color_manual(values = c("Normal" = "#008080", "TNBC" = "darkred", "Change" = "purple"),
                        name = "Condition") +
     labs(title = "Structure-Expression Correlations by Chromosome",
          x = "Chromosome",
@@ -1152,6 +1217,7 @@ run_multilayer_analysis <- function(chromosomes, normal_muxviz_networks, tnbc_mu
   
   # Create output directories if they don't exist
   dir.create("figures", showWarnings = FALSE, recursive = TRUE)
+  dir.create("results/significant_changes", showWarnings = FALSE, recursive = TRUE)
   
   # Check which chromosomes have data in both conditions
   available_chrs <- chromosomes[chromosomes %in% names(normal_muxviz_networks) & 
@@ -1170,7 +1236,6 @@ run_multilayer_analysis <- function(chromosomes, normal_muxviz_networks, tnbc_mu
     cat("Processing", chr, "...\n")
     
     # 1. Structure-expression relationship analysis
-    # Processing each chromosome (continued)
     comparison_results <- compare_conditions(
       normal_muxviz_networks[[chr]], 
       tnbc_muxviz_networks[[chr]],
@@ -1185,10 +1250,12 @@ run_multilayer_analysis <- function(chromosomes, normal_muxviz_networks, tnbc_mu
     )]
     
     # 2. Find significant changes
+    significant_changes_file <- paste0("results/significant_changes/", chr, "_significant_changes.txt")
     significant_changes <- find_significant_changes(
       comparison_results,
       hic_threshold = 1,
-      mi_threshold = 0.5
+      mi_threshold = 0.5,
+      output_file = significant_changes_file
     )
     
     # 3. Multiplex community detection
@@ -1196,7 +1263,7 @@ run_multilayer_analysis <- function(chromosomes, normal_muxviz_networks, tnbc_mu
     tnbc_communities <- detect_multiplex_communities(tnbc_muxviz_networks[[chr]])
     
     # 4. Compare communities
-    community_comparison <- compare_communities(normal_communities, tnbc_communities)
+    community_comparison <- compare_communities(normal_communities, tnbc_communities, output_dir = "results/community_comparison")
     
     # Store community change results
     if (nrow(community_comparison$summary) > 0) {
