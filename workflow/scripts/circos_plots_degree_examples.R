@@ -1,501 +1,695 @@
 library(igraph)
-library(ggraph)
 library(circlize)
 
-
-
-# GRCh38 chromosome sizes
-GRCH38_SIZES <- c(
-  chr1 = 248956422, chr2 = 242193529, chr3 = 198295559,
-  chr4 = 190214555, chr5 = 181538259, chr6 = 170805979,
-  chr7 = 159345973, chr8 = 145138636, chr9 = 138394717,
-  chr10 = 133797422, chr11 = 135086622, chr12 = 133275309,
-  chr13 = 114364328, chr14 = 107043718, chr15 = 101991189,
-  chr16 = 90338345, chr17 = 83257441, chr18 = 80373285,
-  chr19 = 58617616, chr20 = 64444167, chr21 = 46709983,
-  chr22 = 50818468, chrX = 156040895, chrY = 57227415
-)
-
-
-set.seed(999)
-n = 1000
-df = data.frame(sectors = sample(letters[1:8], n, replace = TRUE),
-                x = rnorm(n), y = runif(n))
-
-
-library(circlize)
-
-circos.par("start.degree" = 90)
-circos.initializeWithIdeogram(chromosome.index = "chr3")
-
-
-
-
-
-
-extract_node_interactions <- function(graph, node_of_interest, ph) {
-  # Find the vertex ID of the node based on its name
-  node_id <- which(V(graph)$name == node_of_interest)
+# function to get a gene's pov interactions
+find_gene_connections <- function(graph_list, chromosome, gene_name) {
+  # Get the graph for the specified chromosome
+  graph <- graph_list[[chromosome]]
   
-  # If node is not found, return NULL
-  if (length(node_id) == 0) {
-    warning("Node not found in the graph.")
+  if (is.null(graph)) {
+    stop(paste("Chromosome", chromosome, "not found in the graph list"))
+  }
+  
+  # Find vertices containing the gene name
+  vertex_indices <- which(sapply(V(graph)$genes, function(genes) {
+    if (is.null(genes) || is.na(genes) || genes == "") {
+      return(FALSE)
+    }
+    gene_list <- strsplit(genes, ";")[[1]]
+    return(gene_name %in% gene_list)
+  }))
+  
+  if (length(vertex_indices) == 0) {
+    message(paste("Gene", gene_name, "not found in chromosome", chromosome))
     return(NULL)
   }
   
-  # Get edges involving the node
-  edges <- E(graph)[.inc(node_id)]
-  
-  # Get neighboring node IDs (first neighbors)
-  neighbor_ids <- neighbors(graph, node_id)
-  
-  # Extract edge attributes and get the neighbor nodes
-  edge_data <- data.frame(
-    node1 = rep(node_of_interest, length(neighbor_ids)),  # Repeated node_of_interest
-    node2 = V(graph)[neighbor_ids]$name,  # Neighbor names
-    node2_genes = V(graph)[neighbor_ids]$genes,  # Genes of the neighbors (node2)
-    node2_start = V(graph)[neighbor_ids]$start,
-#    node2_midpoint = V(graph)[neighbor_ids]$midpoint,
-    node2_end = V(graph)[neighbor_ids]$end,
-    node2_type = V(graph)[neighbor_ids]$node_type,
-    zscore = E(graph)[edges]$zscore,  # Edge z-score
-#    distance = E(graph)[edges]$distance,  # Edge distance
-    phenotype = ph
-  )
-  
-  # just label coding
-  unlist(lapply(edge_data$node2_genes, function(x) {
-    s <- unlist(strsplit(x, ";"))
-    s <- s[s %in% tcga_annotation$gene_name[tcga_annotation$gene_type == "protein_coding"]]
+  result <- list()
+  for (i in seq_along(vertex_indices)) {
+    vertex_index <- vertex_indices[i]
+    vertex <- V(graph)[vertex_index]
+    vertex_name <- V(graph)[vertex_index]$name
     
-    paste(s, collapse=";")
+    # Get all neighbors connected to this vertex
+    neighbors <- neighbors(graph, vertex)
     
-  })) -> edge_data$node2_genes
+    # Get all edges connected to this vertex
+    edges <- incident(graph, vertex, mode = "all")
+    
+    # Create a subgraph with the vertex and its neighbors
+    subgraph <- induced_subgraph(graph, c(vertex, neighbors))
+    
+    # Compile information about the vertex
+    vertex_info <- vertex_attr(graph, index = vertex)
+    
+    # Compile information about connections
+    edge_ends <- ends(graph, edges)
+    connections <- data.frame(
+      from = edge_ends[,1],
+      to = edge_ends[,2],
+      stringsAsFactors = FALSE
+    )
+    
+    # Add connected vertex information and attributes
+    connections$connected_vertex <- ifelse(
+      connections$from == vertex_name, 
+      connections$to, 
+      connections$from
+    )
+    
+    # Add connected vertex attributes (including chromosome, positions, and gene types)
+    connections$connected_chr <- sapply(connections$connected_vertex, function(v_name) {
+      v_index <- which(V(graph)$name == v_name)
+      if (length(v_index) > 0 && v_name != vertex_name) {
+        return(V(graph)[v_index]$chr)
+      } else {
+        return(NA)
+      }
+    })
+    
+    connections$connected_start <- sapply(connections$connected_vertex, function(v_name) {
+      v_index <- which(V(graph)$name == v_name)
+      if (length(v_index) > 0 && v_name != vertex_name) {
+        return(V(graph)[v_index]$start)
+      } else {
+        return(NA)
+      }
+    })
+    
+    connections$connected_end <- sapply(connections$connected_vertex, function(v_name) {
+      v_index <- which(V(graph)$name == v_name)
+      if (length(v_index) > 0 && v_name != vertex_name) {
+        return(V(graph)[v_index]$end)
+      } else {
+        return(NA)
+      }
+    })
+    
+    connections$connected_genes <- sapply(connections$connected_vertex, function(v_name) {
+      v_index <- which(V(graph)$name == v_name)
+      if (length(v_index) > 0 && v_name != vertex_name) {
+        return(V(graph)[v_index]$genes)
+      } else {
+        return(NA)
+      }
+    })
+    
+    connections$connected_gene_types <- sapply(connections$connected_vertex, function(v_name) {
+      v_index <- which(V(graph)$name == v_name)
+      if (length(v_index) > 0 && v_name != vertex_name) {
+        return(V(graph)[v_index]$gene_types)
+      } else {
+        return(NA)
+      }
+    })
+    
+    # Add current vertex chromosome and positions
+    connections$vertex_chr <- chromosome
+    connections$vertex_start <- vertex_info$start
+    connections$vertex_end <- vertex_info$end
+    connections$vertex_gene_types <- vertex_info$gene_types
+    
+    # Add edge attributes to connections dataframe
+    for (attr_name in edge_attr_names(graph)) {
+      connections[[attr_name]] <- edge_attr(graph, attr_name, edges)
+    }
+    
+    result[[i]] <- list(
+      vertex_info = vertex_info,
+      connections = connections,
+      subgraph = subgraph
+    )
+  }
   
-  
-  return(edge_data)
+  if (length(result) == 1) {
+    return(result[[1]])
+  } else {
+    message(paste("Found", length(result), "vertices containing gene", gene_name))
+    return(result)
+  }
 }
 
 
-# input is gene name, common nodes, list1, list2
-gene_name = "PTEN"
-
-# get the data from common nodes object (node ID, node chr)
-# PTEN normal
-# PTEN tnbc
-pov < - degree_data_common_nodes[grepl("PTEN", degree_data_common_nodes$genes), ]
-# edit pov to show only coding
-
-pov_node = "51353"
-pov_chr = "chr10"
-
-# call the extract node interactions function on both lists
-# add a node type parameter c("C", "N", "R")
-# call function and rbind
-
-pten_interactions <- rbind(extract_node_interactions(normal_graphs$chr10, pten_node, ph="Normal"),
-                           extract_node_interactions(tnbc_graphs$chr10, pten_node, ph="TNBC"))
-
-
-# we could give back a list where the first element is POV and the second are ints
-
-
-# use this list to plot FOR EACH PHENOTYPE (how to make comparable??)
-
-# chromosome layout starting at midnight
-
-# POV
-# pov segment position start to end
-# pov label is genes
-# pov segment needs a color according to degree (degree_normal, degree_tnbc)
-
-# NODE2
-# node2 position start to end
-# node2 label is genes
-
-# chords are drawn according to ints to each node2
-# zscore is parameter to plot chords colors (and width?)
-
-
-
-
-
-
-
-
-
-
-
-
-############ PLOTTING FUN
-# Function to create chromosome interaction diagrams with ideograms
-# Function to create chromosome interaction diagrams with ideograms
-create_chromosome_diagrams <- function(pov_data, interactions_data, output_file = NULL) {
-  # Load required packages
-  require(circlize)
-  require(colorRamp2)
-  require(grid)
+plot_interactions_pov <- function(pov_normal_list, pov_tnbc_list, topN=100, pov, tcga_annotation, show_non_coding=FALSE) {
   
-  # GRCh38 chromosome sizes
-  GRCH38_SIZES <- c(
-    chr1 = 248956422, chr2 = 242193529, chr3 = 198295559,
-    chr4 = 190214555, chr5 = 181538259, chr6 = 170805979,
-    chr7 = 159345973, chr8 = 145138636, chr9 = 138394717,
-    chr10 = 133797422, chr11 = 135086622, chr12 = 133275309,
-    chr13 = 114364328, chr14 = 107043718, chr15 = 101991189,
-    chr16 = 90338345, chr17 = 83257441, chr18 = 80373285,
-    chr19 = 58617616, chr20 = 64444167, chr21 = 46709983,
-    chr22 = 50818468, chrX = 156040895, chrY = 57227415
-  )
+  # stop if these things are not identical 
+  stopifnot(identical(pov_normal_list$vertex_info, pov_tnbc_list$vertex_info))
   
-  # Extract the POV information
-  pov <- pov_data
-  ints <- interactions_data
+  # STEP 1 build from_bed with pov information
+  from_bed = data.frame(chr=pov_normal_list$vertex_info$chr,
+                        start=pov_normal_list$vertex_info$start,
+                        end=pov_normal_list$vertex_info$end)
   
-  # Determine which chromosome we're working with
-  chr_name <- pov$chr[1]
+  # STEP 2 EXTRACT THE TOP INTERACTIONS BY ZSCORE
+  top_normal <- pov_normal_list$connections[
+    order(pov_normal_list$connections$zscore, decreasing = T)[1:topN], 
+  ]
   
-  # Prepare POV node information
-  pov_node <- data.frame(
-    name = pov$name,
-    chr = pov$chr,
-    start = pov$start,
-    end = pov$end,
-    genes = pov$genes,
-    degree_normal = pov$degree_normal,
-    w_degree_normal = pov$w_degree_normal,
-    degree_tnbc = pov$degree_tnbc,
-    w_degree_tnbc = pov$w_degree_tnbc,
-    type = "POV"
-  )
+  top_tnbc <- pov_tnbc_list$connections[
+    order(pov_tnbc_list$connections$zscore, decreasing = T)[1:topN], 
+  ]
   
-  # Get chromosome length
-  chr_length <- GRCH38_SIZES[chr_name]
+  # STEP 3 calculate colors based on the zscore value
+  all_zscores <- c(top_normal$zscore, top_tnbc$zscore)
   
-  # Ensure all coordinates are within chromosome boundaries
-  ensure_valid_coords <- function(start, end, chr_length) {
-    # Make sure start is valid
-    start <- max(1, min(as.numeric(start), chr_length))
-    # Make sure end is valid and greater than start
-    end <- max(start, min(as.numeric(end), chr_length))
-    return(list(start = start, end = end))
+  # Find global min and max
+  min_zscore <- min(all_zscores)
+  max_zscore <- max(all_zscores)
+  
+  library(viridis)
+  
+  # Create a blue gradient function
+  get_blue_color <- function(zscore) {
+    normalized <- (zscore - min_zscore) / (max_zscore - min_zscore)
+    viridis::plasma(100)[ceiling(normalized * 99) + 1]
   }
   
-  # Fix POV coordinates if needed
-  valid_coords <- ensure_valid_coords(pov_node$start, pov_node$end, chr_length)
-  pov_node$start <- valid_coords$start
-  pov_node$end <- valid_coords$end
+  top_normal$color <- sapply(top_normal$zscore, get_blue_color)
+  top_tnbc$color <- sapply(top_tnbc$zscore, get_blue_color)
   
-  # Extract interaction nodes with validated coordinates
-  int_nodes <- data.frame(
-    name = character(),
-    chr = character(),
-    start = numeric(),
-    end = numeric(),
-    genes = character(),
-    type = character(),
-    stringsAsFactors = FALSE
+  # Create a legend dataframe
+  legend_breaks <- seq(min_zscore, max_zscore, length.out = 6)
+  legend_colors <- sapply(legend_breaks, get_blue_color)
+  
+  legend_df <- data.frame(
+    zscore = round(legend_breaks, 2),
+    color = legend_colors
   )
   
-  # Process each interaction, validating coordinates
-  for (i in 1:nrow(ints)) {
-    # Get valid coordinates
-    valid_coords <- ensure_valid_coords(ints$node2_start[i], ints$node2_end[i], chr_length)
-    
-    # Only add if not already in the dataframe
-    if (!ints$node2[i] %in% int_nodes$name) {
-      int_nodes <- rbind(int_nodes, data.frame(
-        name = ints$node2[i],
-        chr = chr_name,
-        start = valid_coords$start,
-        end = valid_coords$end,
-        genes = ints$node2_genes[i],
-        type = "interaction",
-        stringsAsFactors = FALSE
-      ))
+  # STEP 4 extract to_bed objects for circos plotting
+  to_bed_normal <- top_normal[,c("connected_chr", "connected_start", "connected_end", "color")]
+  colnames(to_bed_normal) <- c("chr", "start", "end", "col")
+  
+  to_bed_tnbc <- top_tnbc[,c("connected_chr", "connected_start", "connected_end", "color")]
+  colnames(to_bed_tnbc) <- c("chr", "start", "end", "col")
+  
+  # Convert tcga_annotation to data.frame for easier lookup
+  tcga_df <- as.data.frame(tcga_annotation)
+  
+  # Helper function to get gene color based on type
+  get_gene_color <- function(gene_name, pov_gene) {
+    if (gene_name == pov_gene) {
+      return("blue")
     }
-  }
-  
-  # Create color scales for degree values
-  # Get the range of degree values for both phenotypes to create a comparable scale
-  max_degree_normal <- max(pov$degree_normal)
-  max_degree_tnbc <- max(pov$degree_tnbc)
-  max_degree <- max(max_degree_normal, max_degree_tnbc)
-  
-  degree_color_scale <- colorRamp2(
-    c(0, max_degree/2, max_degree),
-    c("#FFFFFF", "#FFD700", "#FF0000")  # White to gold to red
-  )
-  
-  # Get the max zscore for consistent chord width scaling
-  max_zscore <- max(ints$zscore)
-  
-  # Split interactions by phenotype
-  normal_ints <- ints[ints$phenotype == "Normal", ]
-  tnbc_ints <- ints[ints$phenotype == "TNBC", ]
-  
-  # Function to create a single diagram
-  create_diagram <- function(phenotype, current_page) {
-    # Select interactions for the current phenotype
-    if (phenotype == "Normal") {
-      current_ints <- normal_ints
-      degree_column <- "degree_normal"
+    
+    gene_info <- tcga_df[tcga_df$gene_name == gene_name, ]
+    
+    if (nrow(gene_info) > 0) {
+      gene_type <- gene_info$gene_type[1]
+      if (gene_type == "protein_coding") {
+        return("black")
+      } else {
+        return("grey")
+      }
     } else {
-      current_ints <- tnbc_ints
-      degree_column <- "degree_tnbc"
+      return("grey")
     }
+  }
+  
+  # Helper function to process genes
+  process_genes <- function(connections_df, pov_info, pov_gene) {
+    labels_bed <- data.frame()
     
-    # Set up the circlize environment
-    circos.clear()
+    connections_with_genes <- connections_df[!is.na(connections_df$connected_genes), ]
     
-    # Set global parameters
-    circos.par(
-      gap.degree = 2,
-      cell.padding = c(0, 0, 0, 0),
-      start.degree = 90  # Start at midnight (12 o'clock)
-    )
-    
-    # Initialize with ideogram
-    circos.initializeWithIdeogram(
-      chromosome.index = chr_name,
-      plotType = c("ideogram", "labels")
-    )
-    
-    # Add track for highlighting nodes
-    circos.track(
-      ylim = c(0, 1),
-      panel.fun = function(x, y) {
-        # Draw POV node
-        pov_rect_col <- degree_color_scale(pov_node[[degree_column]])
-        circos.rect(
-          pov_node$start, 0,
-          pov_node$end, 1,
-          col = pov_rect_col,
-          border = "black"
-        )
+    if (nrow(connections_with_genes) > 0) {
+      for (i in 1:nrow(connections_with_genes)) {
+        genes <- unlist(strsplit(connections_with_genes$connected_genes[i], ";"))
         
-        # Label POV gene with an arrow pointing to it
-        text_pos <- (pov_node$start + pov_node$end) / 2
-        circos.text(
-          text_pos, 0.7,
-          paste0("POV: ", pov_node$genes), 
-          cex = 0.9, 
-          facing = "inside", 
-          niceFacing = TRUE,
-          col = "black",
-          font = 2
-        )
-        
-        # Draw interaction nodes
-        for (i in 1:nrow(int_nodes)) {
-          node_in_phenotype <- any(current_ints$node2 == int_nodes$name[i])
-          rect_col <- ifelse(node_in_phenotype, "#3CB371", "#AAAAAA")  # Green if present, grey if not
+        for (gene in genes) {
+          gene_color <- get_gene_color(gene, pov_gene)
           
-          circos.rect(
-            int_nodes$start[i], 0,
-            int_nodes$end[i], 1,
-            col = rect_col,
-            border = "black"
-          )
-          
-          # Check if text fits within the rectangle
-          width <- int_nodes$end[i] - int_nodes$start[i]
-          node_center <- (int_nodes$start[i] + int_nodes$end[i]) / 2
-          
-          # Extract gene names (some might have multiple genes separated by semicolons)
-          genes <- int_nodes$genes[i]
-          
-          # If there are multiple genes, try to abbreviate
-          if (grepl(";", genes)) {
-            # Split genes
-            gene_list <- strsplit(genes, ";")[[1]]
-            # If more than 2 genes, keep first and indicate there are more
-            if (length(gene_list) > 2) {
-              genes <- paste0(gene_list[1], "+", length(gene_list)-1)
-            }
-          }
-          
-          # Only label nodes in current phenotype
-          if (node_in_phenotype) {
-            # Try to place text at an appropriate position and size
-            text_size <- ifelse(width > chr_length / 60, 0.7, 0.6)
-            
-            tryCatch({
-              circos.text(
-                node_center, 0.5,
-                genes, 
-                cex = text_size, 
-                facing = "inside", 
-                niceFacing = TRUE,
-                col = "black"
-              )
-            }, error = function(e) {
-              # If text placement fails, try a simpler approach or skip
-              message(paste("Note: Could not place text for gene:", genes))
-            })
-          }
+          labels_bed <- rbind(labels_bed, data.frame(
+            chr = connections_with_genes$connected_chr[i],
+            start = connections_with_genes$connected_start[i],
+            end = connections_with_genes$connected_end[i],
+            value1 = gene,
+            color = gene_color,
+            stringsAsFactors = FALSE
+          ))
         }
-      },
-      track.height = 0.15,
-      bg.border = NA
-    )
-    
-    # Draw links (chords) from POV to interaction nodes
-    pov_center <- (pov_node$start + pov_node$end) / 2
-    
-    for (i in 1:nrow(current_ints)) {
-      # Get interaction node details
-      int_node_idx <- which(int_nodes$name == current_ints$node2[i])
-      
-      if (length(int_node_idx) > 0) {
-        # Get valid coordinates
-        int_start <- int_nodes$start[int_node_idx]
-        int_end <- int_nodes$end[int_node_idx]
-        int_center <- (int_start + int_end) / 2
-        
-        # Calculate link width based on zscore and with a minimum width
-        width_factor <- current_ints$zscore[i] / max_zscore
-        link_width <- max(0.005, min(0.02, width_factor * 0.02))  # Scale between 0.005 and 0.02
-        
-        # Use darker colors for higher zscores
-        alpha_level <- 0.4 + (width_factor * 0.4)  # Scale between 0.4 and 0.8
-        link_color <- alpha("#0000FF", alpha_level)
-        
-        # Draw the link with error handling
-        tryCatch({
-          circos.link(
-            chr_name, pov_center,
-            chr_name, int_center,
-            h.ratio = 0.5,
-            w = link_width, 
-            col = link_color
-          )
-        }, error = function(e) {
-          message(paste("Note: Could not draw link to node:", int_nodes$name[int_node_idx]))
-        })
       }
     }
     
-    # Add a title
-    title <- paste("Chromosome", sub("chr", "", chr_name), "Interactions -", phenotype, "Phenotype")
-    grid.text(title, x = 0.5, y = 0.95, gp = gpar(fontsize = 16, fontface = "bold"))
+    pov_genes <- unlist(strsplit(pov_info$genes, ";"))
     
-    # Add a legend for the degree color scale
-    create_legend()
-  }
-  
-  # Function to create legends
-  create_legend <- function() {
-    # Create color legend for node degree
-    pushViewport(viewport(x = 0.85, y = 0.2, width = 0.15, height = 0.3))
-    
-    # Add gradient legend
-    n_steps <- 100
-    for (i in 1:n_steps) {
-      y_pos <- (i - 0.5) / n_steps
-      degree_val <- (i - 1) / (n_steps - 1) * max_degree
-      col <- degree_color_scale(degree_val)
+    for (gene in pov_genes) {
+      gene_color <- get_gene_color(gene, pov_gene)
       
-      grid.rect(x = 0.5, y = y_pos, width = 0.8, height = 1/n_steps, 
-                gp = gpar(fill = col, col = NA))
+      labels_bed <- rbind(labels_bed, data.frame(
+        chr = pov_info$chr,
+        start = pov_info$start,
+        end = pov_info$end,
+        value1 = gene,
+        color = gene_color,
+        stringsAsFactors = FALSE
+      ))
     }
     
-    # Add labels
-    grid.text("Node Degree", x = 0.5, y = 1.05, gp = gpar(fontsize = 9, fontface = "bold"))
-    grid.text(paste0("High (", round(max_degree), ")"), x = 0.5, y = 0.95, gp = gpar(fontsize = 8))
-    grid.text("Low (0)", x = 0.5, y = 0.05, gp = gpar(fontsize = 8))
-    
-    popViewport()
-    
-    # Create legend for node types
-    pushViewport(viewport(x = 0.85, y = 0.55, width = 0.15, height = 0.15))
-    
-    # POV node
-    grid.rect(x = 0.2, y = 0.8, width = 0.2, height = 0.1, 
-              gp = gpar(fill = "#FF0000", col = "black"))
-    grid.text("POV node", x = 0.6, y = 0.8, just = "left", gp = gpar(fontsize = 8))
-    
-    # Interaction node
-    grid.rect(x = 0.2, y = 0.6, width = 0.2, height = 0.1, 
-              gp = gpar(fill = "#3CB371", col = "black"))
-    grid.text("Interaction node", x = 0.6, y = 0.6, just = "left", gp = gpar(fontsize = 8))
-    
-    # Inactive node
-    grid.rect(x = 0.2, y = 0.4, width = 0.2, height = 0.1, 
-              gp = gpar(fill = "#AAAAAA", col = "black"))
-    grid.text("Inactive in phenotype", x = 0.6, y = 0.4, just = "left", gp = gpar(fontsize = 8))
-    
-    # Link width
-    grid.text("Link width ∝ zscore", x = 0.5, y = 0.2, gp = gpar(fontsize = 8))
-    
-    popViewport()
+    return(labels_bed)
   }
   
-  # If output file is provided, create a PDF with both diagrams
-  if (!is.null(output_file)) {
-    pdf(output_file, width = 10, height = 16)
-    
-    # Create layout for two diagrams
-    layout(matrix(1:2, nrow = 2))
-    
-    # Normal phenotype
-    create_diagram("Normal", 1)
-    
-    # TNBC phenotype
-    create_diagram("TNBC", 2)
-    
-    dev.off()
-    
-    return(paste("Plots saved to", output_file))
-  } else {
-    # Create interactive plots (one after another)
-    # Normal phenotype
-    create_diagram("Normal", 1)
-    message("Press [Enter] for TNBC phenotype diagram...")
-    invisible(readline())
-    
-    # TNBC phenotype
-    create_diagram("TNBC", 2)
-    
-    return("Plots displayed in interactive mode")
+  # Create label beds for both conditions
+  labels_bed_normal <- process_genes(top_normal, pov_normal_list$vertex_info, pov)
+  labels_bed_tnbc <- process_genes(top_tnbc, pov_tnbc_list$vertex_info, pov)
+  
+  # Filter out grey genes if show_non_coding is FALSE
+  if (!show_non_coding) {
+    labels_bed_normal <- labels_bed_normal[labels_bed_normal$color != "grey", ]
+    labels_bed_tnbc <- labels_bed_tnbc[labels_bed_tnbc$color != "grey", ]
   }
+  
+  collapse_genes <- function(labels_bed) {
+    labels_bed$coord_id <- paste(labels_bed$chr, labels_bed$start, labels_bed$end, sep="_")
+    
+    collapsed <- aggregate(value1 ~ coord_id + chr + start + end, 
+                           data = labels_bed, 
+                           FUN = function(x) paste(x, collapse = ";"))
+    
+    collapsed$color <- sapply(1:nrow(collapsed), function(i) {
+      coord <- collapsed$coord_id[i]
+      colors <- labels_bed$color[labels_bed$coord_id == coord]
+      if ("blue" %in% colors) {
+        return("blue")
+      } else if ("black" %in% colors) {
+        return("black")
+      } else {
+        return("grey")
+      }
+    })
+    
+    collapsed$coord_id <- NULL
+    
+    return(collapsed)
+  }
+  
+  # Collapse both label beds
+  labels_bed_normal_collapsed <- collapse_genes(labels_bed_normal)
+  labels_bed_tnbc_collapsed <- collapse_genes(labels_bed_tnbc)
+  
+  # Function to create a single circos plot
+  create_single_circos <- function(labels_bed, to_bed, from_bed, topN, title_text) {
+    function() {
+      circos.clear()
+      circos.par("start.degree" = 90)
+      
+      circos.initializeWithIdeogram(plotType = NULL, species = "hg38", chromosome.index = from_bed$chr)
+      
+      circos.genomicLabels(labels_bed, labels.column = 4, side = "outside",
+                           cex = 0.6,
+                           padding =  0.001, connection_height = 0.2, line_lwd = 0.45,
+                           labels_height = min(c(convert_height(0.5, "cm"))),
+                           col = labels_bed$color, niceFacing = TRUE, line_col = "darkgrey")
+      
+      circos.genomicIdeogram(species = "hg38")
+      
+      lapply(seq(1:topN), function(i){
+        circos.genomicLink(from_bed, to_bed[i,], col = to_bed[i,"col"], 
+                           border = NA)
+      })
+      
+      circos.genomicAxis()
+      text(0, 0, title_text, cex = 1.5, font = 2)
+    }
+  }
+  
+  # Create plot functions
+  normal_plot <- create_single_circos(labels_bed_normal_collapsed, to_bed_normal, from_bed, topN, "Normal")
+  tnbc_plot <- create_single_circos(labels_bed_tnbc_collapsed, to_bed_tnbc, from_bed, topN, "TNBC")
+  
+  # Create legend plot function
+  legend_plot <- function() {
+    plot.new()
+    plot.window(xlim = c(0, 1), ylim = c(0, 1))
+    
+    # Create gradient legend
+    n_colors <- nrow(legend_df)
+    rect_height <- 0.8 / n_colors
+    
+    for (i in 1:n_colors) {
+      rect(0.3, 0.1 + (i-1) * rect_height, 
+           0.5, 0.1 + i * rect_height, 
+           col = legend_df$color[i], 
+           border = NA)
+    }
+    
+    # Add z-score labels
+    text(0.55, seq(0.1, 0.9, length.out = n_colors), 
+         labels = sprintf("%.2f", legend_df$zscore),
+         adj = 0, cex = 0.8)
+    
+    text(0.4, 0.95, "Z-score", cex = 1.2, font = 2)
+    
+    # Add gene color legend
+    text(0.4, 0.02, "Gene colors:", cex = 0.8, font = 2)
+    points(0.2, -0.05, pch = 19, col = "blue", cex = 1.2)
+    text(0.25, -0.05, "POV gene", adj = 0, cex = 0.7)
+    points(0.45, -0.05, pch = 19, col = "black", cex = 1.2)
+    text(0.5, -0.05, "Protein coding", adj = 0, cex = 0.7)
+    if (show_non_coding) {
+      points(0.7, -0.05, pch = 19, col = "grey", cex = 1.2)
+      text(0.75, -0.05, "Non-coding", adj = 0, cex = 0.7)
+    }
+  }
+  
+  # Return everything
+  return(list(
+    normal_plot = normal_plot,
+    tnbc_plot = tnbc_plot,
+    legend_plot = legend_plot,
+    legend_df = legend_df,
+    data = list(
+      labels_normal = labels_bed_normal_collapsed,
+      labels_tnbc = labels_bed_tnbc_collapsed,
+      from_bed = from_bed,
+      to_bed_normal = to_bed_normal,
+      to_bed_tnbc = to_bed_tnbc
+    )
+  ))
 }
 
 
-create_chromosome_diagrams(pten_list$pov, pten_list$ints,
-                           "pten_interactions.pdf")
+
+#### diagram function 
+# 
+# pov_normal_list = pten_normal
+# pov_tnbc_list = pten_tnbc
+# pov="PTEN"
+# 
+# plot_interactions_pov <- function(pov_normal_list, pov_tnbc_list, topN=100, pov, tcga_annotation, show_non_coding=FALSE) {
+#   
+#   # stop if these things are not identical 
+#   stopifnot(identical(pov_normal_list$vertex_info, pov_tnbc_list$vertex_info))
+#   
+#   # STEP 1 build from_bed with pov information, it only has three fields, get this from the vertex_info
+#   from_bed = data.frame(chr=pov_normal_list$vertex_info$chr,
+#                         start=pov_normal_list$vertex_info$start,
+#                         end=pov_normal_list$vertex_info$end)
+#   
+#   # STEP 2 EXTRACT THE TOP 100 INTERACTIONS BY ZSCORE FROM EACH "to" DATAFRAME
+#   # so 
+#   # to_bed_normal is
+#   top_normal <- pov_normal_list$connections[
+#     order(pov_normal_list$connections$zscore, decreasing = T)[1:topN], 
+#     ]
+#   
+#   # to_bed_tnbc is
+#   top_tnbc <- pov_tnbc_list$connections[
+#     order(pov_tnbc_list$connections$zscore, decreasing = T)[1:topN], 
+#     ]
+#   
+#   # STEP 3 calculate colors based on the zscore value and add as a column to each to_bed dataframe
+#   all_zscores <- c(top_normal$zscore, top_tnbc$zscore)
+#   
+#   # Find global min and max
+#   min_zscore <- min(all_zscores)
+#   max_zscore <- max(all_zscores)
+#   
+#   # Using the viridis package for a perceptually uniform color scale
+#   # This is colorblind-friendly and prints well in grayscale
+#   library(viridis)
+#   
+#   # Create a blue gradient function
+#   get_blue_color <- function(zscore) {
+#     # Normalize to 0-1 range
+#     normalized <- (zscore - min_zscore) / (max_zscore - min_zscore)
+#     
+#     # Get color from blue palette
+#     # Using 'plasma' scale for high visual distinction between values
+#     viridis::plasma(100)[ceiling(normalized * 99) + 1]
+#   }
+#   
+#   top_normal$color <- sapply(top_normal$zscore, get_blue_color)
+#   top_tnbc$color <- sapply(top_tnbc$zscore, get_blue_color)
+#   
+#   # Create a legend dataframe with regular intervals for reference
+#   legend_breaks <- seq(min_zscore, max_zscore, length.out = 6)
+#   legend_colors <- sapply(legend_breaks, get_blue_color)
+#   
+#   #### OUT Print for reference
+#   legend_df <- data.frame(
+#     zscore = round(legend_breaks, 2),
+#     color = legend_colors
+#   )
+#   #print(legend_df)
+#   
+#   # STEP 4 extract to_bed objects for circos plotting
+#   to_bed_normal <- top_normal[,c("connected_chr", "connected_start", "connected_end", "color")]
+#   colnames(to_bed_normal) <- c("chr", "start", "end", "col")
+#   
+#   to_bed_tnbc <- top_tnbc[,c("connected_chr", "connected_start", "connected_end", "color")]
+#   colnames(to_bed_tnbc) <- c("chr", "start", "end", "col")
+#   
+#   # STEP 4 LABELS TAKE EACH top DATAFRAME AND EXTRACT THE GENE NAMES AND COORDINATES
+#   # Helper function to process genes
+#   # Convert tcga_annotation to data.frame for easier lookup
+#   tcga_df <- as.data.frame(tcga_annotation)
+#   
+#   # Helper function to get gene color based on type
+#   get_gene_color <- function(gene_name, pov_gene) {
+#     if (gene_name == pov_gene) {
+#       return("blue")
+#     }
+#     
+#     # Look up gene type in tcga_annotation
+#     gene_info <- tcga_df[tcga_df$gene_name == gene_name, ]
+#     
+#     if (nrow(gene_info) > 0) {
+#       gene_type <- gene_info$gene_type[1]
+#       if (gene_type == "protein_coding") {
+#         return("black")
+#       } else {
+#         return("grey")
+#       }
+#     } else {
+#       # Default to grey if gene not found
+#       return("grey")
+#     }
+#   }
+#   
+#   # Helper function to process genes
+#   process_genes <- function(connections_df, pov_info, pov_gene) {
+#     labels_bed <- data.frame()
+#     
+#     # Process connected genes (remove NA rows first)
+#     connections_with_genes <- connections_df[!is.na(connections_df$connected_genes), ]
+#     
+#     # Process each row with genes
+#     if (nrow(connections_with_genes) > 0) {
+#       for (i in 1:nrow(connections_with_genes)) {
+#         genes <- unlist(strsplit(connections_with_genes$connected_genes[i], ";"))
+#         
+#         for (gene in genes) {
+#           gene_color <- get_gene_color(gene, pov_gene)
+#           
+#           labels_bed <- rbind(labels_bed, data.frame(
+#             chr = connections_with_genes$connected_chr[i],
+#             start = connections_with_genes$connected_start[i],
+#             end = connections_with_genes$connected_end[i],
+#             value1 = gene,
+#             color = gene_color,
+#             stringsAsFactors = FALSE
+#           ))
+#         }
+#       }
+#     }
+#     
+#     # Add POV genes
+#     pov_genes <- unlist(strsplit(pov_info$genes, ";"))
+#     
+#     for (gene in pov_genes) {
+#       gene_color <- get_gene_color(gene, pov_gene)
+#       
+#       labels_bed <- rbind(labels_bed, data.frame(
+#         chr = pov_info$chr,
+#         start = pov_info$start,
+#         end = pov_info$end,
+#         value1 = gene,
+#         color = gene_color,
+#         stringsAsFactors = FALSE
+#       ))
+#     }
+#     
+#     return(labels_bed)
+#   }
+#   
+#   # Create label beds for both conditions
+#   labels_bed_normal <- process_genes(top_normal, pov_normal_list$vertex_info, pov)
+#   labels_bed_tnbc <- process_genes(top_tnbc, pov_tnbc_list$vertex_info, pov)
+#   
+#   # Filter out grey genes if show_non_coding is FALSE
+#   if (!show_non_coding) {
+#     labels_bed_normal <- labels_bed_normal[labels_bed_normal$color != "grey", ]
+#     labels_bed_tnbc <- labels_bed_tnbc[labels_bed_tnbc$color != "grey", ]
+#   }
+#   
+#   collapse_genes <- function(labels_bed) {
+#     # Create a unique identifier for each coordinate
+#     labels_bed$coord_id <- paste(labels_bed$chr, labels_bed$start, labels_bed$end, sep="_")
+#     
+#     # Group by coordinates and collapse
+#     collapsed <- aggregate(value1 ~ coord_id + chr + start + end, 
+#                            data = labels_bed, 
+#                            FUN = function(x) paste(x, collapse = ";"))
+#     
+#     # Determine color for collapsed entries
+#     # If any gene is blue (POV), the whole group is blue
+#     # Otherwise, if any is black (protein_coding), the group is black
+#     # Otherwise, grey
+#     collapsed$color <- sapply(1:nrow(collapsed), function(i) {
+#       coord <- collapsed$coord_id[i]
+#       colors <- labels_bed$color[labels_bed$coord_id == coord]
+#       if ("blue" %in% colors) {
+#         return("blue")
+#       } else if ("black" %in% colors) {
+#         return("black")
+#       } else {
+#         return("grey")
+#       }
+#     })
+#     
+#     # Remove the coord_id column
+#     collapsed$coord_id <- NULL
+#     
+#     return(collapsed)
+#   }
+#   
+#   # Collapse both label beds
+#   labels_bed_normal_collapsed <- collapse_genes(labels_bed_normal)
+#   labels_bed_tnbc_collapsed <- collapse_genes(labels_bed_tnbc)
+#   
+#   ### NORMAL PLOT
+#   circos.par("start.degree" = 90)
+#   
+#   circos.initializeWithIdeogram(plotType = NULL, species = "hg38", chromosome.index = "chr10")
+#   
+#   
+#   # this takes in a bed to label the genes
+#   circos.genomicLabels(labels_bed_normal_collapsed, labels.column = 4, side = "outside",
+#                        cex = 0.65,
+#                        padding =  0.001, connection_height = 0.2,line_lwd = 0.45,
+#                        labels_height = min(c(convert_height(0.5, "cm"))),
+#                        col = labels_bed_normal_collapsed$color, niceFacing = TRUE, line_col = "darkgrey")
+#   
+#   
+#   circos.genomicIdeogram(species = "hg38")
+#   
+#   lapply(seq(1:topN), function(i){
+#     circos.genomicLink(from_bed, to_bed_normal[i,], col = to_bed_normal[i,"col"], 
+#                        border = NA)
+#   })
+#   
+#   
+#   circos.genomicAxis()
+#   
+#   
+#   ### TNBC PLOT
+#   #circos.clear()
+#   circos.par("start.degree" = 90)
+#   
+#   circos.initializeWithIdeogram(plotType = NULL, species = "hg38", chromosome.index = "chr10")
+#   
+#   
+#   # this takes in a bed to label the genes
+#   circos.genomicLabels(labels_bed_tnbc_collapsed, labels.column = 4, side = "outside",
+#                        cex = 0.65,
+#                        padding =  0.001, connection_height = 0.2,line_lwd = 0.45,
+#                        labels_height = min(c(convert_height(0.5, "cm"))),
+#                        col = labels_bed_tnbc_collapsed$color, niceFacing = TRUE, line_col = "darkgrey")
+#   
+#   circos.genomicIdeogram(species = "hg38")
+#   
+#   lapply(seq(1:topN), function(i){
+#     circos.genomicLink(from_bed, to_bed_tnbc[i,], col = to_bed_tnbc[i,"col"], 
+#                        border = NA)
+#   })
+#   
+#   
+#   circos.genomicAxis()
+#   
+#   
+#   
+# }
 
 
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# PXDC1
+# set.seed(123)
+# 
+# bed1 = generateRandomBed(nr = 100)
+# bed1 = bed1[sample(nrow(bed1), 20), ]
+# #bed1 <- head(bed1)
+# 
+# bed2 = generateRandomBed(nr = 100)
+# bed2 = bed2[sample(nrow(bed2), 20), ]
+# #bed2 <- head(bed2)
+# 
+# bed1$chr <- "chr1"
+# bed2$chr <- "chr1"
+# 
+# bed1$value1 <- NULL
+# 
+# bed1$end <- bed1$start+100000
+#
+# circos.par("start.degree" = 90)
+# 
+# circos.initializeWithIdeogram(species = "hg38", chromosome = "chr1")
+# 
+# circos.genomicLink(bed1[1,], bed2[5,], col = rand_color(nrow(bed1[1,]), transparency = 0.5), 
+#                    border = NA)
+# 
+# # somehow we need to take it outside, like track wise
+# circos.labels(sectors = bed1$chr, x = bed1$start, 
+#               labels = paste("gene", seq(1:20), sep="_"),
+#               side = "outside")
+#
+## second attempt
+# bed<-data.frame(chr="chr1", start=24270817, end=24417739, value1="myLittleGene")
+# 
+# bed$start <- bed1$start[1]
+# bed$end <- bed1$end[1]
+# 
+# bed_lab <- bed
+# bed_lab$start <- bed2$start[6]
+# bed_lab$end <- bed2$end[6]
+# bed_lab$value1 <- "targetG"
+# 
+# bed <- rbind(bed, bed)
+# bed$value1[2] <- "GeneBig"
+#
+# should thickness be related to the hi-c interaction strength?
+# size of the chromosome divided by something times the hic count??
+# labels should always have the middle point
+# 
+# 
+# circos.clear()
+# circos.par("start.degree" = 90)
+# 
+# circos.initializeWithIdeogram(plotType = NULL, species = "hg38", chromosome.index = "chr1")
+# 
+# 
+# # this takes in a bed to label the genes
+# # we can indicate a color vector in the bed for lncRNa and coding genes
+# circos.genomicLabels(rbind(bed, bed_lab), labels.column = 4, side = "outside",
+#                      cex = 0.75,
+#                      padding =  0.001, connection_height = 0.05,
+#                      labels_height = min(c(convert_height(0.5, "cm"))),
+#                      col = c("black", "red"), niceFacing = TRUE)
+# 
+# circos.genomicIdeogram(species = "hg38")
+# 
+# # there is an lapply here for the second bed (the pov stays the same)
+# circos.genomicLink(bed1[1,], bed2[6,], col = rand_color(nrow(bed1[1,]), transparency = 0.5), 
+#                    border = NA)
+# 
+# circos.genomicLink(bed1[1,], bed2[7,], col = rand_color(nrow(bed1[1,]), transparency = 0.5), 
+#                    border = NA)
+# 
+# circos.genomicLink(bed1[1,], bed2[13,], col = rand_color(nrow(bed1[1,]), transparency = 0.5), 
+#                    border = NA)
+# 
+# circos.genomicLink(bed1[1,], bed2[12,], col = bed2[12,"col"], 
+#                    border = NA)
+# 
+# circos.genomicAxis()
